@@ -296,6 +296,9 @@ tr:last-child td{border-bottom:none}
 .thumb img{width:100%; height:100%; object-fit:cover; display:block}
 .thumb button{position:absolute; top:2px; right:2px; width:24px; height:24px; min-height:24px; padding:0; border-radius:50%;
   background:rgba(0,0,0,.7); border:1px solid var(--line2); color:#fca5a5; font-size:14px; line-height:1; cursor:pointer}
+/* มุมล่างซ้ายของรูปที่ยังไม่ได้อัปขึ้น Drive — ยังอยู่แค่ในเครื่องนี้ */
+.thumb .pendmark{position:absolute; left:2px; bottom:2px; padding:0 5px; border-radius:6px;
+  background:rgba(0,0,0,.7); border:1px solid var(--line2); color:#fcd34d; font-size:12px; line-height:18px}
 
 /* ---------- โหมดเดินตรวจ ---------- */
 .progbar{height:9px; border-radius:999px; background:rgba(255,255,255,.1); overflow:hidden; margin:8px 0}
@@ -391,7 +394,7 @@ tr:last-child td{border-bottom:none}
 const APP_VERSION = '1.0 (เฟส 1)';
 const COMPANY = 'Chusilp Group Trading Co., Ltd.';   // แบรนด์ถาวร — ไม่ใช่ค่าตั้ง แก้ได้ที่บรรทัดนี้จุดเดียว
 const LS_KEY = 'fireguard_data';
-const SCHEMA_VERSION = 2;                      // v2 = เพิ่มผังจุดติดตั้ง (เฟส 7)
+const SCHEMA_VERSION = 3;                      // v2 = เพิ่มผังจุดติดตั้ง (เฟส 7) · v3 = รูปเก็บบน Google Drive
 
 /* ชนิดสารดับเพลิง — weigh:true = ต้องชั่งน้ำหนักแทนการดูเกจแรงดัน */
 const AGENT_TYPES = [
@@ -475,6 +478,11 @@ const PLAN_QUALITY  = 0.85;
 const PHOTO_MAX_PX  = 1280;
 const PHOTO_QUALITY = 0.8;
 const MAX_PHOTOS    = 4;
+/* v3: รูปตัวเต็มไปอยู่บน Google Drive · ในเครื่องเก็บแค่รูปย่อไว้ดูตอนออฟไลน์ (ราว 15-25 KB/รูป) */
+const THUMB_MAX_PX  = 320;
+const THUMB_QUALITY = 0.6;
+const UPLOAD_BATCH  = 8;                      // อัปรูปค้างสูงสุดกี่ใบต่อการซิงก์ 1 รอบ (กันเน็ตโรงงานค้างยาว)
+const SHRINK_TIMEOUT_MS = 10000;              // ย่อรูปนานเกินนี้ = ถือว่าไม่สำเร็จ ไปต่อ ไม่ปล่อยให้ค้าง
 const STORAGE_WARN_MB = 4;                    // เตือนเมื่อข้อมูลรวมเกินเท่านี้ (โควตาราว 5MB)
 const WIPE_PHRASE   = 'ลบข้อมูลทั้งหมด';       // ต้องพิมพ์ให้ตรงในขั้นยืนยันที่ 3 ก่อนล้างข้อมูล
 
@@ -544,7 +552,14 @@ function migrate(d){
     if (!Array.isArray(d.floorplans)) d.floorplans = [];
     d.version = 2;
   }
-  /* v3+ ในอนาคต: เพิ่มบล็อก if (d.version < 3) {...; d.version = 3;} ตรงนี้ */
+  if (d.version < 3){                                  // v2 → v3: รูปย้ายไปเก็บบน Google Drive
+    d.inspections = listToV3(d.inspections, 'photos');
+    d.issues      = listToV3(d.issues, 'closePhotos');
+    d.floorplans  = (d.floorplans || []).map(p =>
+      (p && p.image) ? { ...p, image: normalizePhoto(p.image) } : p);
+    d.version = 3;
+  }
+  /* v4+ ในอนาคต: เพิ่มบล็อก if (d.version < 4) {...; d.version = 4;} ตรงนี้ */
   d.version = SCHEMA_VERSION;
   return d;
 }
@@ -1373,6 +1388,162 @@ function defaultReportRange(today){
   return m <= 6 ? { from: y + '-01-01', to: y + '-06-30' } : { from: y + '-07-01', to: y + '-12-31' };
 }
 
+/* ============ เฟส 6.5: รูปถ่ายเก็บบน Google Drive ============ */
+/* รูป 1 ใบเก็บเป็น object:
+     { uid, id, name, thumb, full, pending }
+     uid   = รหัสประจำรูป ใช้จับคู่ตอนซิงก์ (มีตั้งแต่ก่อนขึ้น Drive)
+     id    = Drive file id — มีแล้ว = ขึ้นคลาวด์เรียบร้อย เครื่องอื่นเห็นรูปนี้ได้
+     thumb = รูปย่อ ~320px เก็บในเครื่อง ดูได้ตอนออฟไลน์ ไม่ส่งขึ้น Sheets
+     full  = รูปเต็มที่ยังไม่ได้อัป (มีเฉพาะตอน pending) อัปเสร็จแล้วลบทิ้งเพื่อคืนพื้นที่
+   ออฟไลน์ยังถ่ายรูปได้ตามปกติ — ค้างไว้ในเครื่องก่อน แล้วทยอยอัปให้ตอนซิงก์ */
+
+function normalizePhoto(p){
+  if (!p) return null;
+  if (typeof p === 'string'){                     // ข้อมูลรุ่น v2: base64 ก้อนเดียว ยังไม่เคยขึ้น Drive
+    return { uid: uid('ph'), id:'', name:'', thumb:'', full:p, pending:true };
+  }
+  if (typeof p !== 'object') return null;
+  const id = String(p.id || '');
+  return {
+    uid: String(p.uid || uid('ph')),
+    id,
+    name: String(p.name || ''),
+    thumb: String(p.thumb || ''),
+    full: String(p.full || ''),
+    pending: !id                                  // ไม่มี Drive id = ยังค้างรออัป
+  };
+}
+
+function normalizePhotoList(list){
+  return (Array.isArray(list) ? list : []).map(normalizePhoto).filter(Boolean);
+}
+
+/* แปลงทั้งคอลเลกชันให้เป็นรูปแบบ v3 (ใช้ตอน migrate) */
+function listToV3(list, key){
+  return (Array.isArray(list) ? list : []).map(r => {
+    if (!r || typeof r !== 'object') return r;
+    return { ...r, [key]: normalizePhotoList(r[key]) };
+  });
+}
+
+/* ลิงก์รูปบน Drive — Google เคยเปลี่ยนรูปแบบลิงก์มาหลายรอบ จึงรวมไว้ที่นี่จุดเดียว
+   ถ้าวันหนึ่งเปิดรูปไม่ขึ้น ให้แก้แค่ 2 ฟังก์ชันนี้ ไม่ต้องไล่แก้ทั้งไฟล์ */
+function drivePhotoUrl(id, w){
+  const fid = String(id || '');
+  return fid ? ('https://drive.google.com/thumbnail?id=' + encodeURIComponent(fid) + '&sz=w' + (w || 1600)) : '';
+}
+function drivePhotoUrlAlt(id){                    // ทางสำรองเมื่อลิงก์แรกโหลดไม่ขึ้น
+  const fid = String(id || '');
+  return fid ? ('https://lh3.googleusercontent.com/d/' + encodeURIComponent(fid) + '=w1600') : '';
+}
+function driveViewUrl(id){                        // เปิดหน้า Drive จริง — ใช้ได้เสมอถึงลิงก์รูปตรงจะพัง
+  const fid = String(id || '');
+  return fid ? ('https://drive.google.com/file/d/' + encodeURIComponent(fid) + '/view') : '';
+}
+
+/* รูปย่อสำหรับตารางรูป — ในเครื่องมีอะไรใช้อันนั้นก่อน ไม่มีค่อยดึงจาก Drive */
+function photoThumbSrc(p){
+  const q = normalizePhoto(p);
+  if (!q) return '';
+  return q.thumb || q.full || drivePhotoUrl(q.id, 640);
+}
+
+/* รูปเต็มตอนกดดู — ยังไม่ได้อัปก็ดูของในเครื่องได้ */
+function photoFullSrc(p){
+  const q = normalizePhoto(p);
+  if (!q) return '';
+  return q.full || drivePhotoUrl(q.id, 1600) || q.thumb;
+}
+
+function isPendingPhoto(p){
+  const q = normalizePhoto(p);
+  return !!(q && !q.id);
+}
+
+/* ชื่อไฟล์ที่จะไปโผล่ใน Drive — ต้องอ่านแล้วรู้ว่าถังไหน วันไหน เรื่องอะไร */
+function photoFileName(code, kind, dateISO, i){
+  const safe = s => String(s || '').replace(/[\\\/:*?"<>|]/g, '_').trim();
+  return [safe(code) || 'ไม่ระบุถัง', safe(dateISO) || todayISO(), safe(kind), (i || 0) + 1].join('_') + '.jpg';
+}
+
+/* เหลือเฉพาะข้อมูลอ้างอิงไว้ส่งขึ้น Sheets — รูปจริงไม่ไป (ช่องใน Sheets รับได้ 50,000 ตัวอักษร) */
+function photoRefs(list){
+  return normalizePhotoList(list)
+    .filter(p => p.id)                            // ยังไม่ขึ้น Drive = ยังไม่ต้องบอกเครื่องอื่น
+    .map(p => ({ uid:p.uid, id:p.id, name:p.name }));
+}
+
+/* รวมรูปตอนซิงก์: เอา Drive id จากคลาวด์ + รูปย่อของเครื่องนี้ ไม่มีฝั่งไหนหาย */
+function mergePhotoList(local, remote){
+  const mine = normalizePhotoList(local);
+  const byUid = new Map();
+  for (const p of mine) byUid.set(p.uid, p);
+  for (const r of normalizePhotoList(remote)){
+    const cur = byUid.get(r.uid);
+    if (!cur){ byUid.set(r.uid, r); continue; }    // รูปจากเครื่องอื่น — เก็บ id ไว้ ดูรูปผ่าน Drive
+    byUid.set(r.uid, {
+      ...cur,
+      id:   cur.id || r.id,                       // ฝั่งไหนอัปสำเร็จก่อนก็ใช้ id นั้น
+      name: cur.name || r.name,
+      pending: !(cur.id || r.id)
+    });
+  }
+  return [...byUid.values()];
+}
+
+/* ไล่หารูปที่ยังค้างอยู่ในเครื่องทั้งระบบ — คืนตำแหน่งไว้ให้เขียนค่ากลับได้ตรงจุด */
+function collectPendingPhotos(data){
+  const out = [];
+  const codeOf = feId => {
+    const fe = ((data && data.extinguishers) || []).find(f => f && f.id === feId);
+    return fe ? fe.code : '';
+  };
+  for (const ins of (data && data.inspections) || []){
+    normalizePhotoList(ins.photos).forEach((p, i) => {
+      if (!p.id) out.push({ rec:ins, key:'photos', index:i, photo:p, kind:'ตรวจ', code:codeOf(ins.feId), date:ins.date });
+    });
+  }
+  for (const is of (data && data.issues) || []){
+    normalizePhotoList(is.closePhotos).forEach((p, i) => {
+      if (!p.id) out.push({ rec:is, key:'closePhotos', index:i, photo:p, kind:'ปิดงาน', code:codeOf(is.feId), date:is.closedDate || is.openedDate });
+    });
+  }
+  for (const pl of (data && data.floorplans) || []){
+    if (pl && pl.image && !normalizePhoto(pl.image).id){
+      out.push({ rec:pl, key:'image', index:-1, photo:normalizePhoto(pl.image), kind:'ผัง', code:pl.name || 'ผัง', date:pl.createdAt });
+    }
+  }
+  return out;
+}
+
+function pendingPhotoCount(data){
+  return collectPendingPhotos(data).length;
+}
+
+/* draft ที่เอาไปโชว์บน debug panel — ตัดข้อมูลรูปดิบออก ไม่งั้น base64 ท่วมจนอ่านค่าอื่นไม่ออก */
+function debugDraft(d){
+  if (!d || typeof d !== 'object') return d;
+  if (!Array.isArray(d.photos)) return d;
+  return { ...d, photos: normalizePhotoList(d.photos).map(p =>
+    (p.id ? 'drive:' + p.id : 'ในเครื่อง') + (p.thumb ? ' +ย่อ' : '') + (p.full ? ' +เต็ม' : '')) };
+}
+
+/* สรุปสถานะรูปทั้งระบบ — ใช้บน debug panel และไว้ตอบว่ารูปกินพื้นที่ในเครื่องเท่าไร */
+function photoStats(data){
+  let total = 0, onDrive = 0, bytes = 0;
+  const add = list => {
+    for (const p of normalizePhotoList(list)){
+      total++;
+      if (p.id) onDrive++;
+      bytes += (p.thumb || '').length + (p.full || '').length;
+    }
+  };
+  for (const ins of (data && data.inspections) || []) add(ins.photos);
+  for (const is of (data && data.issues) || []) add(is.closePhotos);
+  for (const pl of (data && data.floorplans) || []) if (pl && pl.image) add([pl.image]);
+  return { total, onDrive, pending: total - onDrive, localKB: Math.round(bytes / 1024) };
+}
+
 /* ============ เฟส 6: ซิงก์ Google Sheets (offline-first) ============ */
 /* หลักการ: localStorage คือความจริงหลัก · ซิงก์คือสำเนาสำรอง — ไม่มีเน็ตก็ทำงานได้ครบ */
 
@@ -1398,13 +1569,15 @@ function mergeRecords(local, remote, keepLocalKeys){
     if (!cur){ byId.set(r.id, r); added++; continue; }
     if (recStamp(r) > recStamp(cur)){
       const merged = { ...r };
-      for (const k of keep){
-        const remoteEmpty = merged[k] === undefined || merged[k] === null ||
-                            (Array.isArray(merged[k]) && merged[k].length === 0);
-        if (remoteEmpty && cur[k] !== undefined) merged[k] = cur[k];
-      }
+      for (const k of keep) merged[k] = mergePhotoList(cur[k], r[k]);   // รูป: รวมสองฝั่ง ไม่ทับกันหาย
       byId.set(r.id, merged);
       updated++;
+    } else {
+      /* ฝั่งเราใหม่กว่า — แต่ยังต้องรับรหัสรูปที่เครื่องอื่นอัปขึ้น Drive ไว้ ไม่งั้นเครื่องนี้จะมองไม่เห็นรูปนั้น */
+      for (const k of keep){
+        if (r[k] === undefined) continue;
+        byId.set(r.id, { ...byId.get(r.id), [k]: mergePhotoList(cur[k], r[k]) });
+      }
     }
   }
   return { list: [...byId.values()], added, updated };
@@ -1430,19 +1603,20 @@ function syncStatSummary(stat){
   return { added, updated };
 }
 
-/* ตัดรูปออกก่อนส่งขึ้น Sheets — ช่องหนึ่งใน Sheets รับได้ 50,000 ตัวอักษร รูป base64 ทะลุแน่ */
+/* ก่อนส่งขึ้น Sheets: ตัวรูปไม่ไป ไปแค่รหัสอ้างอิงบน Drive (สั้นมาก ไม่ชนเพดาน 50,000 ตัวอักษรต่อช่อง)
+   เครื่องอื่นได้รหัสนี้ไปแล้วเปิดรูปจาก Drive ได้เลย */
 function stripPhotos(data){
   const out = { ...data };
   out.inspections = (data.inspections || []).map(x => {
     const c = { ...x };
-    c.photoCount = Array.isArray(x.photos) ? x.photos.length : 0;
-    delete c.photos;
+    c.photos = photoRefs(x.photos);
+    c.photoCount = normalizePhotoList(x.photos).length;
     return c;
   });
   out.issues = (data.issues || []).map(x => {
     const c = { ...x };
-    c.closePhotoCount = Array.isArray(x.closePhotos) ? x.closePhotos.length : 0;
-    delete c.closePhotos;
+    c.closePhotos = photoRefs(x.closePhotos);
+    c.closePhotoCount = normalizePhotoList(x.closePhotos).length;
     return c;
   });
   return out;
@@ -2058,8 +2232,8 @@ function inspRow(ins){
       <div class="hint" style="margin-top:5px">ผู้ตรวจ: ${esc(ins.inspector)} · ผ่าน ${s.pass} / ไม่ผ่าน ${s.fail} / ไม่เกี่ยวข้อง ${s.na}${ins.weightKg ? ' · ชั่งได้ ' + esc(ins.weightKg) + ' กก.' : ''}</div>
       ${failList.length ? `<div class="hint" style="color:#fca5a5; margin-top:5px">⚠️ ${failList.map(esc).join(' · ')}</div>` : ''}
       ${ins.note ? `<div class="hint" style="margin-top:5px">📝 ${esc(ins.note)}</div>` : ''}
-      ${(ins.photos && ins.photos.length) ? `<div class="thumbs">${ins.photos.map((p,i) =>
-        `<div class="thumb"><img src="${p}" alt="รูปการตรวจ ${i+1}" data-act="viewPhoto" data-src="${p}"></div>`).join('')}</div>` : ''}
+      ${(ins.photos && ins.photos.length) ? `<div class="thumbs">${normalizePhotoList(ins.photos).map((p,i) =>
+        `<div class="thumb"><img src="${esc(photoThumbSrc(p))}" alt="รูปการตรวจ ${i+1}" data-act="viewPhoto" data-src="${esc(photoFullSrc(p))}" data-fid="${esc(p.id)}" data-title="รูปการตรวจ ${i+1}">${p.id ? '' : '<span class="pendmark" title="ยังไม่ได้อัปขึ้น Drive">☁︎</span>'}</div>`).join('')}</div>` : ''}
     </div>`;
 }
 
@@ -2125,8 +2299,8 @@ function viewInspect(){
       ${d.photos.length < MAX_PHOTOS
         ? `<input type="file" accept="image/*" capture="environment" data-act="addPhoto">`
         : `<p class="hint">ครบ ${MAX_PHOTOS} รูปแล้ว ลบรูปเดิมก่อนถ้าจะเพิ่มใหม่</p>`}
-      ${d.photos.length ? `<div class="thumbs">${d.photos.map((p,i) => `
-        <div class="thumb"><img src="${p}" alt="รูปที่ ${i+1}">
+      ${d.photos.length ? `<div class="thumbs">${normalizePhotoList(d.photos).map((p,i) => `
+        <div class="thumb"><img src="${esc(photoThumbSrc(p))}" alt="รูปที่ ${i+1}">
         <button data-act="delPhoto" data-i="${i}" title="ลบรูปนี้">✕</button></div>`).join('')}</div>` : ''}
     </div>
 
@@ -2405,8 +2579,8 @@ function issueCard(iss, fe, today, compact){
         ${iss.source === 'inspection' ? ' · จากการตรวจ' : ' · เปิดเอง'}
       </div>
       ${closed && iss.closedDate ? `<div class="hint" style="color:#86efac; margin-top:4px">✓ ${iss.status==='cancel'?'ยกเลิกเมื่อ':'ปิดงานเมื่อ'} ${thaiDate(iss.closedDate)}${iss.closeNote ? ' — ' + esc(iss.closeNote) : ''}</div>` : ''}
-      ${(iss.closePhotos && iss.closePhotos.length) ? `<div class="thumbs">${iss.closePhotos.map((src,i) =>
-        `<div class="thumb"><img src="${src}" alt="รูปหลังแก้ไข ${i+1}" data-act="viewPhoto" data-src="${src}"></div>`).join('')}</div>` : ''}
+      ${(iss.closePhotos && iss.closePhotos.length) ? `<div class="thumbs">${normalizePhotoList(iss.closePhotos).map((p,i) =>
+        `<div class="thumb"><img src="${esc(photoThumbSrc(p))}" alt="รูปหลังแก้ไข ${i+1}" data-act="viewPhoto" data-src="${esc(photoFullSrc(p))}" data-fid="${esc(p.id)}" data-title="รูปหลังแก้ไข ${i+1}">${p.id ? '' : '<span class="pendmark" title="ยังไม่ได้อัปขึ้น Drive">☁︎</span>'}</div>`).join('')}</div>` : ''}
       <div class="row" style="margin-top:10px">
         ${compact ? '' : `<button class="btn sm" data-act="open" data-id="${esc(iss.feId)}">เปิดถัง</button>`}
         <button class="btn sm" data-act="editIssue" data-id="${esc(iss.id)}">✏️ แก้ไข</button>
@@ -2796,6 +2970,7 @@ function qrModalHTML(fe){
 function viewSettings(){
   const s = DATA.settings;
   const kb = (storageBytes()/1024).toFixed(1);
+  const pendingLeft = pendingPhotoCount(DATA);          // รูปที่ยังไม่ได้ขึ้น Drive
   return `
     <h2 class="sec">ตั้งค่าระบบ</h2>
     <div class="card">
@@ -2838,7 +3013,7 @@ function viewSettings(){
     </table></div>
     <h2 class="sec">ซิงก์ Google Sheets (สำรองขึ้นคลาวด์)</h2>
     <div class="card">
-      <p class="hint" style="margin-top:0">ระบบทำงานได้เต็มรูปแบบตอนออฟไลน์เสมอ — ซิงก์เป็นชั้นเสริมไว้สำรองข้อมูลและดูบน Google Sheets ได้ · <b>รูปถ่ายไม่ถูกซิงก์ขึ้นไป</b> (เก็บเฉพาะจำนวนรูป) เพราะช่องใน Sheets รับข้อมูลรูปไม่ไหว รูปยังอยู่ในเครื่องและในไฟล์สำรอง .json</p>
+      <p class="hint" style="margin-top:0">ระบบทำงานได้เต็มรูปแบบตอนออฟไลน์เสมอ — ซิงก์เป็นชั้นเสริมไว้สำรองข้อมูลและดูบน Google Sheets ได้ · <b>รูปถ่ายเก็บบน Google Drive</b> ส่วนใน Sheets เก็บแค่รหัสรูป เครื่องอื่นที่ซิงก์แล้วจึงเปิดดูรูปได้ด้วย</p>
 
       <label class="f">ลิงก์ Web App ของ Google Apps Script</label>
       <input type="text" value="${esc(s.gasUrl)}" placeholder="https://script.google.com/macros/s/..../exec" data-act="set" data-key="gasUrl">
@@ -2860,9 +3035,23 @@ function viewSettings(){
       <p class="hint" id="syncStatus" style="margin-top:10px">${esc(syncStatusText(DATA.meta))}</p>
     </div>
 
+    <h2 class="sec">รูปถ่ายบน Google Drive</h2>
+    <div class="card">
+      <p class="hint" style="margin-top:0">รูปที่ถ่ายจะถูกอัปขึ้นโฟลเดอร์ <b>FireGuard รูปถ่าย</b> ใน Google Drive ตอนซิงก์ แล้วเก็บรูปย่อไว้ในเครื่องเพื่อดูตอนไม่มีเน็ต · ถ่ายรูปตอนออฟไลน์ได้ตามปกติ ระบบจะทยอยอัปให้เองเมื่อกลับมามีเน็ต</p>
+      ${pendingLeft
+        ? `<div class="err">มีรูปที่ยังไม่ได้อัปขึ้น Drive <b>${pendingLeft} ใบ</b> — รูปเหล่านี้เครื่องอื่นยังมองไม่เห็น</div>`
+        : `<p class="hint">✓ รูปทุกใบขึ้น Drive แล้ว</p>`}
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" data-act="migratePhotos" ${isValidGasUrl(s.gasUrl) && pendingLeft && !photoMigrating ? '' : 'disabled'}>
+          ${photoMigrating ? '⏳ กำลังย้ายรูป…' : '☁️ ย้ายรูปเก่าขึ้น Drive'}
+        </button>
+      </div>
+      <p class="hint" style="margin-top:10px">ลบรูปในแอป = ไฟล์บน Drive ยังอยู่ (ระบบไม่ลบไฟล์จริงให้อัตโนมัติ เพราะลบแล้วเอาคืนไม่ได้) ถ้าต้องการลบจริง เข้าไปลบในโฟลเดอร์ Drive เอง</p>
+    </div>
+
     <h2 class="sec">สำรองข้อมูล / นำเข้าทะเบียนถัง</h2>
     <div class="card">
-      <p class="hint" style="margin-top:0">ไฟล์สำรองเป็น <b>.json</b> เก็บข้อมูลทั้งระบบ (ถัง · การตรวจ · งานแก้ไข · บริการ · รูปแนบ) — ควรสำรองเก็บไว้อย่างน้อยเดือนละครั้ง</p>
+      <p class="hint" style="margin-top:0">ไฟล์สำรองเป็น <b>.json</b> เก็บข้อมูลทั้งระบบ (ถัง · การตรวจ · งานแก้ไข · บริการ) — ควรสำรองเก็บไว้อย่างน้อยเดือนละครั้ง<br><b>เรื่องรูป:</b> ไฟล์สำรองมีรูปย่อกับรูปที่ยังไม่ได้อัป ส่วนรูปตัวเต็มที่ขึ้น Drive แล้วจะเก็บเป็น “รหัสรูป” — ตัวไฟล์รูปจริงอยู่ในโฟลเดอร์ Drive ห้ามลบโฟลเดอร์นั้นทิ้ง</p>
       <div class="row">
         <button class="btn primary" data-act="backup">💾 ดาวน์โหลดไฟล์สำรอง (.json)</button>
         <label class="btn" style="cursor:pointer">♻️ กู้คืนจากไฟล์สำรอง
@@ -2899,6 +3088,26 @@ function openModal(html){
   $('#modalHost').innerHTML = `<div class="mask" data-act="maskClose"><div class="modal">${html}</div></div>`;
   document.body.style.overflow = 'hidden';
 }
+/* กดดูรูปใบเดียวแบบเต็ม — รูปที่ขึ้น Drive แล้วจะโหลดจาก Drive
+   ถ้าลิงก์แรกโหลดไม่ขึ้น (Google เคยเปลี่ยนรูปแบบลิงก์) สลับไปลิงก์สำรองให้เอง แล้วยังมีปุ่มเปิดใน Drive กันเหนียว */
+function openPhotoModal(src, fid, title){
+  openModal(`<h3>${esc(title || 'รูปถ่าย')}</h3>
+    <img id="photoBig" src="${esc(src)}" alt="รูปขนาดเต็ม" style="width:100%; border-radius:10px; margin-top:8px">
+    ${fid
+      ? `<p class="hint" style="margin-top:8px">☁️ เก็บบน Google Drive · <a href="${esc(driveViewUrl(fid))}" target="_blank" rel="noopener">เปิดใน Drive</a></p>`
+      : `<p class="hint" style="margin-top:8px">📱 รูปนี้ยังอยู่ในเครื่องนี้เท่านั้น — ซิงก์เพื่ออัปขึ้น Drive ให้เครื่องอื่นเห็นด้วย</p>`}
+    <div class="foot"><button class="btn" data-act="closeModal">ปิด</button></div>`);
+  const img = document.getElementById('photoBig');
+  if (img && fid){
+    let tried = false;
+    img.onerror = () => {
+      if (tried) return;                          // ลองสำรองแล้วยังไม่ขึ้น = ปล่อยให้เห็นรูปแตก แล้วใช้ปุ่มเปิดใน Drive
+      tried = true;
+      img.src = drivePhotoUrlAlt(fid);
+    };
+  }
+}
+
 function closeModal(){
   $('#modalHost').innerHTML = '';
   document.body.style.overflow = '';
@@ -2930,8 +3139,9 @@ function renderDebug(){
     <div><span class="k">car</span>: งานแก้ไข ${(DATA.issues||[]).length} ใบ · ยังไม่ปิด ${summarizeIssues(DATA.issues, todayISO()).active} · เลยกำหนดปิด ${summarizeIssues(DATA.issues, todayISO()).overdue}</div>
     <div><span class="k">service</span>: บริการ ${(DATA.services||[]).length} · ใช้งานจริง ${(DATA.usageEvents||[]).length} · ฟอร์มเปิดอยู่ ${UI.formDraft ? esc(UI.formDraft.kind) : 'ไม่มี'}</div>
     <div><span class="k">sync</span>: ${DATA.settings.gasUrl ? 'ตั้งลิงก์แล้ว' : 'ยังไม่ตั้งลิงก์'} · อัตโนมัติ ${DATA.settings.autoSync ? 'เปิด' : 'ปิด'} · ${esc(syncStatusText(DATA.meta))}</div>
+    <div><span class="k">photos</span>: ทั้งหมด ${photoStats(DATA).total} ใบ · ขึ้น Drive แล้ว ${photoStats(DATA).onDrive} · ค้างในเครื่อง ${photoStats(DATA).pending} · รูปในเครื่องกิน ${photoStats(DATA).localKB} KB · กำลังย้าย ${photoMigrating ? 'ใช่' : 'ไม่'}</div>
     <div><span class="k">lastError</span>: ${esc(UI.lastError || 'ไม่มี')}</div>
-    ${UI.inspectDraft ? `<pre>draft: ${esc(JSON.stringify(UI.inspectDraft, null, 1))}</pre>` : ''}`;
+    ${UI.inspectDraft ? `<pre>draft: ${esc(JSON.stringify(debugDraft(UI.inspectDraft), null, 1))}</pre>` : ''}`;
 }
 
 /* ============================================================
@@ -3109,7 +3319,7 @@ function saveInspection(){
     overall: s.overall,
     note: [d.note.trim(), failNotes.length ? 'ข้อที่ไม่ผ่าน: ' + failNotes.join(' | ') : '']
             .filter(Boolean).join(' · '),
-    photos: Array.isArray(d.photos) ? d.photos.slice(0, MAX_PHOTOS) : [],
+    photos: normalizePhotoList(d.photos).slice(0, MAX_PHOTOS),
     createdAt: new Date().toISOString()
   };
   DATA.inspections.push(rec);
@@ -3197,14 +3407,47 @@ function shrinkImage(file){
   });
 }
 
+/* ย่อรูปจาก data URL ที่มีอยู่แล้ว — ใช้ทำรูปย่อสำหรับเก็บในเครื่องหลังอัปตัวเต็มขึ้น Drive
+   มีตัวจับเวลากันค้าง: บางเบราว์เซอร์เจอรูปเสียแล้วไม่ยิงทั้ง onload และ onerror
+   ถ้าไม่กันไว้ การอัปรูปจะค้างคาไม่จบ ผู้ใช้เห็นแต่ "กำลังอัป…" ตลอดไป */
+function shrinkDataUrl(dataUrl, maxPx, quality){
+  return new Promise((resolve, reject) => {
+    if (!dataUrl) return reject(new Error('ไม่มีรูปให้ย่อ'));
+    let settled = false;
+    const finish = fn => v => { if (settled) return; settled = true; clearTimeout(timer); fn(v); };
+    const good = finish(resolve), bad = finish(reject);
+    const timer = setTimeout(() => bad(new Error('ย่อรูปไม่สำเร็จ (ใช้เวลานานผิดปกติ)')), SHRINK_TIMEOUT_MS);
+    const img = new Image();
+    img.onerror = () => bad(new Error('เปิดรูปนี้ไม่ได้'));
+    img.onload = () => {
+      try{
+        const { w, h } = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height, maxPx || THUMB_MAX_PX);
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        good(cv.toDataURL('image/jpeg', quality || THUMB_QUALITY));
+      }catch(e){ bad(e); }
+    };
+    img.src = dataUrl;
+  });
+}
+
+/* รับไฟล์จากกล้อง/แกลเลอรี → ได้รูป 1 ใบในรูปแบบ v3 (ยังไม่ขึ้น Drive จนกว่าจะซิงก์) */
+async function makePhotoRecord(file){
+  const full  = await shrinkImage(file);
+  let thumb = '';
+  try{ thumb = await shrinkDataUrl(full, THUMB_MAX_PX, THUMB_QUALITY); }
+  catch(e){ console.error('[FireGuard] ทำรูปย่อไม่สำเร็จ', e); }
+  return { uid: uid('ph'), id:'', name:'', thumb, full, pending:true };
+}
+
 async function addPhotoFromInput(input){
   const d = UI.inspectDraft;
   if (!d || !input.files || !input.files[0]) return;
   if (d.photos.length >= MAX_PHOTOS){ toast('แนบได้สูงสุด ' + MAX_PHOTOS + ' รูป', 'bad'); return; }
   try{
     toast('กำลังย่อรูป…', '', 1200);
-    const dataUrl = await shrinkImage(input.files[0]);
-    d.photos.push(dataUrl);
+    d.photos.push(await makePhotoRecord(input.files[0]));
     render();
     warnIfStorageHeavy();
   }catch(e){
@@ -3327,8 +3570,8 @@ function photoBoxHTML(photos, label){
     ${photos.length < MAX_PHOTOS
       ? `<input type="file" accept="image/*" capture="environment" data-act="addFormPhoto">`
       : `<p class="hint">ครบ ${MAX_PHOTOS} รูปแล้ว ลบรูปเดิมก่อนถ้าจะเพิ่มใหม่</p>`}
-    ${photos.length ? `<div class="thumbs">${photos.map((src,i) =>
-      `<div class="thumb"><img src="${src}" alt="รูปที่ ${i+1}"><button data-act="delFormPhoto" data-i="${i}" title="ลบรูปนี้">✕</button></div>`).join('')}</div>` : ''}`;
+    ${photos.length ? `<div class="thumbs">${normalizePhotoList(photos).map((p,i) =>
+      `<div class="thumb"><img src="${esc(photoThumbSrc(p))}" alt="รูปที่ ${i+1}"><button data-act="delFormPhoto" data-i="${i}" title="ลบรูปนี้">✕</button></div>`).join('')}</div>` : ''}`;
 }
 
 function issueFormHTML(d){
@@ -3519,7 +3762,7 @@ function doCloseIssue(){
     status: d.result === 'cancel' ? 'cancel' : 'done',
     closedDate: d.closedDate,
     closeNote: String(d.closeNote||'').trim(),
-    closePhotos: Array.isArray(d.photos) ? d.photos.slice(0, MAX_PHOTOS) : [],
+    closePhotos: normalizePhotoList(d.photos).slice(0, MAX_PHOTOS),
     updatedAt: new Date().toISOString() };
   save();
   closeForm();
@@ -3625,7 +3868,7 @@ async function addFormPhotoFromInput(input){
   syncFormDOM();
   try{
     toast('กำลังย่อรูป…', '', 1200);
-    d.photos.push(await shrinkImage(input.files[0]));
+    d.photos.push(await makePhotoRecord(input.files[0]));
     renderForm();
     warnIfStorageHeavy();
   }catch(e){
@@ -3918,13 +4161,14 @@ function doImport(){
 /* ---------- เฟส 6: ซิงก์ Google Sheets ---------- */
 let syncing = false;
 let autoSyncTimer = null;
+let photoMigrating = false;                     // กันกดปุ่มย้ายรูปซ้ำระหว่างที่ยังอัปไม่เสร็จ
 
 function setSyncStatus(msg){
   const el = document.getElementById('syncStatus');
   if (el) el.textContent = msg;
 }
 
-async function gasCall(action){
+async function gasCall(action, extra){
   const url = String(DATA.settings.gasUrl || '').trim();
   if (!isValidGasUrl(url)) throw new Error('ยังไม่ได้ตั้งลิงก์ Web App หรือลิงก์ไม่ถูกต้อง');
   const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
@@ -3933,7 +4177,7 @@ async function gasCall(action){
     /* ไม่ใส่ Content-Type โดยตั้งใจ — ใส่แล้วจะโดน CORS preflight ที่ GAS ไม่ตอบ */
     const res = await fetch(url, {
       method:'POST',
-      body: JSON.stringify(syncPayload(action, DATA, DATA.settings.syncToken)),
+      body: JSON.stringify({ ...syncPayload(action, DATA, DATA.settings.syncToken), ...(extra || {}) }),
       redirect:'follow',
       signal: ctrl ? ctrl.signal : undefined
     });
@@ -3947,6 +4191,95 @@ async function gasCall(action){
   }finally{
     if (timer) clearTimeout(timer);
   }
+}
+
+/* ---------- อัปรูปที่ค้างอยู่ในเครื่องขึ้น Drive ---------- */
+
+/* อัปรูป 1 ใบ แล้วเขียนผลกลับเข้าที่เดิม — สำเร็จแล้วทิ้งรูปเต็มในเครื่อง เหลือแค่รูปย่อ
+   คืนข้อความเตือนจากฝั่ง Drive (ถ้ามี) เช่นตั้งสิทธิ์แชร์ไม่ผ่าน */
+async function uploadOnePhoto(job){
+  const p = job.photo;
+  const full = String(p.full || '');
+  if (!full) throw new Error('รูปนี้ไม่มีข้อมูลรูปในเครื่องแล้ว');
+  const name = photoFileName(job.code, job.kind, job.date, job.index < 0 ? 0 : job.index);
+  const r = await gasCall('uploadPhoto', {
+    photo: {
+      dataB64: full.split('base64,').pop(),
+      mimeType: (full.match(/^data:([^;]+);/) || [null, 'image/jpeg'])[1],
+      name,
+      date: isValidISO(job.date) ? job.date : todayISO()
+    }
+  });
+  if (!r || !r.id) throw new Error('อัปโหลดแล้วแต่ไม่ได้รหัสไฟล์กลับมา');
+
+  let thumb = p.thumb;
+  if (!thumb){
+    try{ thumb = await shrinkDataUrl(full, THUMB_MAX_PX, THUMB_QUALITY); }
+    catch(e){ thumb = ''; console.error('[FireGuard] ทำรูปย่อไม่สำเร็จ', e); }
+  }
+  const done = { uid:p.uid, id:r.id, name:r.name || name, thumb, full:'', pending:false };
+
+  if (job.key === 'image'){                       // รูปผังจุดติดตั้ง (มีรูปเดียวต่อผัง)
+    job.rec.image = done;
+  }else{
+    const list = normalizePhotoList(job.rec[job.key]);
+    const i = list.findIndex(x => x.uid === p.uid);
+    if (i >= 0) list[i] = done; else list.push(done);
+    job.rec[job.key] = list;
+  }
+  return r.warn || '';
+}
+
+/* ทยอยอัปรูปค้างทีละชุด — ล้มกลางทางก็ไม่เป็นไร รูปที่เหลือยังอยู่ในเครื่อง ค่อยอัปรอบหน้า */
+async function uploadPendingPhotos(limit){
+  if (!isValidGasUrl(DATA.settings.gasUrl)){
+    return { done:0, failed:0, left:pendingPhotoCount(DATA), warn:'', err:'ยังไม่ได้ตั้งลิงก์ Web App' };
+  }
+  const jobs = collectPendingPhotos(DATA).slice(0, limit || UPLOAD_BATCH);
+  let done = 0, failed = 0, warn = '', err = '';
+  for (const job of jobs){
+    try{
+      const w = await uploadOnePhoto(job);
+      if (w && !warn) warn = w;
+      done++;
+      setSyncStatus('⏳ กำลังอัปรูปขึ้น Drive ' + done + '/' + jobs.length + '…');
+    }catch(e){
+      failed++;
+      err = e.message;
+      UI.lastError = 'อัปรูปขึ้น Drive ไม่สำเร็จ: ' + e.message;
+      console.error('[FireGuard] upload photo failed', e);
+      break;                                      // ล้มหนึ่งใบมักแปลว่าเน็ตหลุดหรือสิทธิ์ไม่ผ่าน — ยิงต่อเสียเวลาเปล่า
+    }
+  }
+  if (done) save();
+  return { done, failed, left: pendingPhotoCount(DATA), warn, err };
+}
+
+/* ปุ่ม "ย้ายรูปเก่าขึ้น Drive" ในหน้าตั้งค่า — วนอัปจนหมดหรือจนกว่าจะติดปัญหา */
+async function migratePhotosNow(){
+  if (photoMigrating) return;
+  const total = pendingPhotoCount(DATA);
+  if (!total){ toast('ไม่มีรูปค้าง รูปทุกใบขึ้น Drive แล้ว', 'good', 3200); return; }
+  photoMigrating = true;
+  render();
+  let done = 0, warn = '', err = '';
+  try{
+    while (true){
+      const r = await uploadPendingPhotos(UPLOAD_BATCH);
+      done += r.done;
+      if (r.warn && !warn) warn = r.warn;
+      if (r.err){ err = r.err; break; }
+      if (!r.left || !r.done) break;               // หมดแล้ว หรือรอบนี้อัปไม่ขึ้นเลย = หยุด ไม่วนไม่รู้จบ
+    }
+  }finally{
+    photoMigrating = false;
+  }
+  const left = pendingPhotoCount(DATA);
+  setSyncStatus(left ? ('อัปแล้ว ' + done + ' รูป · ยังค้าง ' + left + ' รูป') : ('✓ อัปรูปขึ้น Drive ครบแล้ว ' + done + ' รูป'));
+  if (err) toast('อัปได้ ' + done + ' รูป แล้วติดปัญหา: ' + err, 'bad', 7000);
+  else if (warn) toast('อัปครบ ' + done + ' รูป แต่มีข้อควรระวัง: ' + warn, 'bad', 8000);
+  else toast('ย้ายรูปขึ้น Drive แล้ว ' + done + ' รูป', 'good', 4000);
+  render();
 }
 
 function markSync(status, note){
@@ -3974,10 +4307,14 @@ async function syncNow(silent){
       for (const n of remote.inspectors) if (n && !DATA.inspectors.includes(n)) DATA.inspectors.push(n);
     }
     save();
+    const up = await uploadPendingPhotos();      // อัปรูปที่ค้างก่อน แล้วค่อย push — รหัสรูปบน Drive จะได้ขึ้นไปพร้อมข้อมูล
     await gasCall('push');
-    const note = sum.added || sum.updated ? ('รับมาใหม่ ' + sum.added + ' · อัปเดต ' + sum.updated) : 'ข้อมูลตรงกันทั้งสองฝั่ง';
+    const note = (sum.added || sum.updated ? ('รับมาใหม่ ' + sum.added + ' · อัปเดต ' + sum.updated) : 'ข้อมูลตรงกันทั้งสองฝั่ง')
+               + (up.done ? ' · อัปรูป ' + up.done + ' ใบ' : '')
+               + (up.left ? ' · รูปค้างอีก ' + up.left + ' ใบ' : '');
     markSync('ok', note);
     if (!silent) toast('ซิงก์สำเร็จ — ' + note, 'good', 3600);
+    if (!silent && up.warn) toast(up.warn, 'bad', 8000);
     render();
   }catch(e){
     UI.lastError = 'ซิงก์ไม่สำเร็จ: ' + e.message;
@@ -4022,6 +4359,12 @@ function gasHelpModal(){
           ตั้ง <b>Execute as: Me</b> · <b>Who has access: Anyone</b> → Deploy → อนุญาตสิทธิ์</li>
       <li>คัดลอกลิงก์ที่ลงท้ายด้วย <b>/exec</b> มาวางในช่อง “ลิงก์ Web App” ของหน้านี้ แล้วกดทดสอบการเชื่อมต่อ</li>
     </ol>
+    <div class="card" style="border-color:rgba(56,189,248,.4)">
+      <b style="color:#7dd3fc">📷 เรื่องรูปถ่าย (เวอร์ชันนี้เก็บรูปลง Google Drive)</b>
+      <p class="hint" style="margin:6px 0 0">โค้ด <b>code.gs</b> รุ่นนี้ขอสิทธิ์เข้าถึง Drive เพิ่ม — ตอน Deploy ครั้งแรกหลังอัปเดตโค้ด Google จะให้กด <b>อนุญาตสิทธิ์อีกรอบ</b> ต้องกดอนุญาต ไม่งั้นรูปจะอัปไม่ขึ้น (แอปจะขึ้นข้อความว่าอัปรูปไม่สำเร็จ)</p>
+      <p class="hint" style="margin:6px 0 0">อยากเช็คว่าสิทธิ์ผ่านหรือยัง: ในหน้า Apps Script เลือกฟังก์ชัน <b>testDrive</b> แล้วกด Run — ถ้าผ่านจะได้ลิงก์รูปทดสอบใน Execution log (ไฟล์ทดสอบลบทิ้งได้)</p>
+      <p class="hint" style="margin:6px 0 0">รูปจะไปอยู่ในโฟลเดอร์ <b>FireGuard รูปถ่าย</b> ที่ Drive ของบัญชีที่ deploy แยกโฟลเดอร์ย่อยตามเดือน</p>
+    </div>
     <div class="card" style="border-color:rgba(245,158,11,.45); background:var(--amber-dim)">
       <b style="color:#fcd34d">⚠️ ทุกครั้งที่แก้โค้ดใน Apps Script</b>
       <p class="hint" style="margin:6px 0 0">กด save อย่างเดียวไม่พอ ลิงก์เดิมจะยังรันโค้ดเวอร์ชันเก่า — ต้องไป <b>Deploy → Manage deployments → ✏️ → Version: New version → Deploy</b> ทุกครั้ง (ลิงก์ยังเป็นอันเดิม)</p>
@@ -4118,8 +4461,7 @@ document.addEventListener('click', e => {
       d.photos.splice(Number(t.dataset.i), 1); render(); break;
     }
     case 'viewPhoto':
-      openModal(`<h3>รูปการตรวจ</h3><img src="${t.dataset.src}" style="width:100%; border-radius:10px; margin-top:8px">
-                 <div class="foot"><button class="btn" data-act="closeModal">ปิด</button></div>`);
+      openPhotoModal(t.dataset.src || '', t.dataset.fid || '', t.dataset.title || 'รูปถ่าย');
       break;
 
     /* ----- เฟส 4: งานแก้ไข (CAR) ----- */
@@ -4234,6 +4576,7 @@ document.addEventListener('click', e => {
     case 'syncNow':  syncNow(false); break;
     case 'syncPing': syncPing(); break;
     case 'gasHelp':  gasHelpModal(); break;
+    case 'migratePhotos': migratePhotosNow(); break;
 
     /* ----- เฟส 5: รายงาน / CSV / สำรองข้อมูล ----- */
     case 'printReport': window.print(); break;
@@ -5016,9 +5359,16 @@ test('mergeRecords ไม่ลบของที่คลาวด์ไม่�
   assertEq(r.list.map(x => x.id).sort(), ['a','b']);
 });
 test('mergeRecords รูปในเครื่องไม่หายเมื่อคลาวด์ไม่มีรูป', () => {
-  const local  = [{ id:'i1', photos:['รูป1'], updatedAt:'2026-08-01T00:00:00Z' }];
+  const local  = [{ id:'i1', photos:[{ uid:'p1', id:'', thumb:'ย่อ1', full:'เต็ม1' }], updatedAt:'2026-08-01T00:00:00Z' }];
   const remote = [{ id:'i1', photoCount:1, updatedAt:'2026-08-20T00:00:00Z' }];
-  assertEq(mergeRecords(local, remote, ['photos']).list[0].photos, ['รูป1']);
+  const got = mergeRecords(local, remote, ['photos']).list[0].photos;
+  assertEq([got.length, got[0].uid, got[0].thumb], [1, 'p1', 'ย่อ1']);
+});
+test('mergeRecords ฝั่งเราใหม่กว่า ยังรับรหัสรูปบน Drive จากคลาวด์', () => {
+  const local  = [{ id:'i1', photos:[{ uid:'p1', id:'', thumb:'ย่อ1', full:'เต็ม1' }], updatedAt:'2026-08-20T00:00:00Z' }];
+  const remote = [{ id:'i1', photos:[{ uid:'p1', id:'drive9', name:'FE-001.jpg' }], updatedAt:'2026-08-01T00:00:00Z' }];
+  const got = mergeRecords(local, remote, ['photos']).list[0].photos;
+  assertEq([got.length, got[0].id, got[0].thumb], [1, 'drive9', 'ย่อ1']);
 });
 test('mergeRecords ข้ามรายการที่ไม่มี id', () => {
   const r = mergeRecords([{ id:'a' }], [{ v:'ไม่มี id' }]);
@@ -5039,31 +5389,142 @@ test('mergeAll คลาวด์ว่าง ข้อมูลเดิมอ�
   assertEq([m.data.extinguishers.length, m.data.inspections.length], [1,1]);
 });
 
-test('stripPhotos ตัดรูปออกแต่เก็บจำนวนไว้', () => {
-  const d = { inspections:[{ id:'i1', photos:['a','b'] }], issues:[{ id:'s1', closePhotos:['c'] }] };
+test('stripPhotos ส่งขึ้นแค่รหัสรูป ไม่ส่งตัวรูป', () => {
+  const d = { inspections:[{ id:'i1', photos:[{ uid:'p1', id:'drive1', name:'a.jpg', thumb:'ย่อ', full:'' },
+                                              { uid:'p2', id:'', thumb:'ย่อ2', full:'เต็ม2' }] }],
+              issues:[{ id:'s1', closePhotos:[{ uid:'c1', id:'drive2', name:'c.jpg', thumb:'ย่อ3' }] }] };
   const out = stripPhotos(d);
-  assertEq([out.inspections[0].photos, out.inspections[0].photoCount], [undefined, 2]);
-  assertEq([out.issues[0].closePhotos, out.issues[0].closePhotoCount], [undefined, 1]);
+  assertEq(out.inspections[0].photos, [{ uid:'p1', id:'drive1', name:'a.jpg' }]);   // p2 ยังไม่ขึ้น Drive จึงไม่ส่ง
+  assertEq(out.inspections[0].photoCount, 2);                                        // แต่จำนวนรูปจริงยังบอกครบ
+  assertEq(out.issues[0].closePhotos, [{ uid:'c1', id:'drive2', name:'c.jpg' }]);
+  assertEq(out.issues[0].closePhotoCount, 1);
+});
+test('stripPhotos ไม่ส่ง base64 ขึ้นคลาวด์เด็ดขาด', () => {
+  const out = stripPhotos({ inspections:[{ id:'i1', photos:[{ uid:'p1', id:'d1', thumb:'data:image/jpeg;base64,AAA', full:'data:image/jpeg;base64,BBB' }] }], issues:[] });
+  assertTrue(JSON.stringify(out).indexOf('base64') < 0, 'ต้องไม่มีข้อมูลรูปหลงไปกับ payload');
 });
 test('stripPhotos ไม่พังเมื่อไม่มีรูป', () =>
   assertEq(stripPhotos({ inspections:[{id:'i'}], issues:[] }).inspections[0].photoCount, 0));
 test('stripPhotos ไม่แก้ข้อมูลต้นฉบับ', () => {
-  const d = { inspections:[{ id:'i1', photos:['a'] }], issues:[] };
+  const d = { inspections:[{ id:'i1', photos:[{ uid:'p1', id:'d1', thumb:'ย่อ' }] }], issues:[] };
   stripPhotos(d);
-  assertEq(d.inspections[0].photos, ['a']);
+  assertEq([d.inspections[0].photos.length, d.inspections[0].photos[0].thumb], [1, 'ย่อ']);
 });
 
-test('syncPayload push ส่งข้อมูลครบ 5 กลุ่ม ไม่มีรูป ไม่มีค่าตั้งเครื่อง', () => {
-  const d = { extinguishers:[{id:'f'}], inspections:[{id:'i', photos:['x']}], issues:[], services:[], usageEvents:[],
+test('syncPayload push ส่งข้อมูลครบ 5 กลุ่ม ไม่มีตัวรูป ไม่มีค่าตั้งเครื่อง', () => {
+  const d = { extinguishers:[{id:'f'}],
+              inspections:[{ id:'i', photos:[{ uid:'p1', id:'drive1', name:'a.jpg', thumb:'ย่อ', full:'เต็ม' }] }],
+              issues:[], services:[], usageEvents:[],
               inspectors:['เดย์'], settings:{ gasUrl:'ลับ', syncToken:'ลับ' } };
   const pl = syncPayload('push', d, 'tok');
   assertEq(Object.keys(pl.data).sort(), ['extinguishers','inspections','inspectors','issues','services','usageEvents']);
-  assertEq([pl.action, pl.token, pl.data.inspections[0].photos], ['push','tok',undefined]);
+  assertEq([pl.action, pl.token], ['push','tok']);
+  assertEq(pl.data.inspections[0].photos, [{ uid:'p1', id:'drive1', name:'a.jpg' }]);
   assertTrue(pl.settings === undefined, 'ห้ามส่ง settings ขึ้นคลาวด์');
 });
 test('syncPayload pull ไม่ต้องแนบข้อมูล', () => {
   const pl = syncPayload('pull', { extinguishers:[{id:'f'}] }, '');
   assertEq([pl.action, pl.data], ['pull', undefined]);
+});
+
+/* ---------- รูปถ่ายบน Google Drive (v3) ---------- */
+test('normalizePhoto รูปเก่ารุ่น v2 (base64 ก้อนเดียว) กลายเป็นรูปค้างรออัป', () => {
+  const p = normalizePhoto('data:image/jpeg;base64,AAA');
+  assertEq([p.full, p.id, p.pending], ['data:image/jpeg;base64,AAA', '', true]);
+  assertTrue(!!p.uid, 'ต้องมี uid ไว้จับคู่ตอนซิงก์');
+});
+test('normalizePhoto รูปที่ขึ้น Drive แล้ว ไม่ถือว่าค้าง', () =>
+  assertEq(normalizePhoto({ uid:'p1', id:'d1', thumb:'ย่อ' }).pending, false));
+test('normalizePhoto ค่าขยะ → null', () => assertEq([normalizePhoto(null), normalizePhoto(0)], [null, null]));
+test('normalizePhotoList คัดค่าเสียทิ้ง', () =>
+  assertEq(normalizePhotoList(['a', null, { uid:'p', id:'d' }]).length, 2));
+test('normalizePhotoList รับค่าที่ไม่ใช่ array ได้', () => assertEq(normalizePhotoList(undefined), []));
+
+test('listToV3 แปลงรูปทั้งคอลเลกชัน', () => {
+  const out = listToV3([{ id:'i1', photos:['เก่า1','เก่า2'] }], 'photos');
+  assertEq([out[0].photos.length, out[0].photos[0].pending], [2, true]);
+});
+test('migrate v2 → v3 รูปเก่าไม่หายสักใบ', () => {
+  const d = migrate({ version:2, extinguishers:[], inspections:[{ id:'i1', photos:['รูปเก่า'] }],
+                      issues:[{ id:'s1', closePhotos:['รูปปิดงาน'] }], services:[], usageEvents:[],
+                      floorplans:[], inspectors:[], settings:{}, meta:{} });
+  assertEq(d.version, 3);
+  assertEq([d.inspections[0].photos[0].full, d.issues[0].closePhotos[0].full], ['รูปเก่า', 'รูปปิดงาน']);
+  assertEq(pendingPhotoCount(d), 2);                    // รูปเก่าทั้งสองใบเข้าคิวรออัปขึ้น Drive
+});
+test('migrate v3 แล้วไม่แปลงซ้ำ (รูปที่ขึ้น Drive แล้วไม่กลับไปค้าง)', () => {
+  const d = migrate({ version:3, extinguishers:[], inspections:[{ id:'i1', photos:[{ uid:'p1', id:'d1', thumb:'ย่อ' }] }],
+                      issues:[], services:[], usageEvents:[], floorplans:[], inspectors:[], settings:{}, meta:{} });
+  assertEq([d.inspections[0].photos[0].id, pendingPhotoCount(d)], ['d1', 0]);
+});
+
+test('drivePhotoUrl ประกอบลิงก์จากรหัสไฟล์', () =>
+  assertTrue(drivePhotoUrl('abc123', 800).includes('id=abc123') && drivePhotoUrl('abc123', 800).includes('sz=w800')));
+test('drivePhotoUrl ไม่มีรหัส → ว่าง', () => assertEq([drivePhotoUrl(''), driveViewUrl(null)], ['','']));
+test('drivePhotoUrlAlt เป็นคนละโดเมนกับลิงก์หลัก', () =>
+  assertTrue(drivePhotoUrlAlt('abc').includes('googleusercontent') && !drivePhotoUrlAlt('abc').includes('thumbnail')));
+
+test('photoThumbSrc ใช้รูปย่อในเครื่องก่อน', () =>
+  assertEq(photoThumbSrc({ uid:'p', id:'d1', thumb:'ย่อ', full:'เต็ม' }), 'ย่อ'));
+test('photoThumbSrc ไม่มีรูปย่อ ใช้รูปเต็มที่ยังค้างในเครื่อง', () =>
+  assertEq(photoThumbSrc({ uid:'p', id:'', thumb:'', full:'เต็ม' }), 'เต็ม'));
+test('photoThumbSrc ในเครื่องไม่มีอะไรเลย ดึงจาก Drive', () =>
+  assertTrue(photoThumbSrc({ uid:'p', id:'d1' }).includes('id=d1')));
+test('photoFullSrc รูปที่ขึ้น Drive แล้วเปิดจาก Drive', () =>
+  assertTrue(photoFullSrc({ uid:'p', id:'d1', thumb:'ย่อ' }).includes('sz=w1600')));
+test('photoFullSrc รูปที่ยังไม่อัป ใช้ของในเครื่อง', () =>
+  assertEq(photoFullSrc({ uid:'p', id:'', full:'เต็ม', thumb:'ย่อ' }), 'เต็ม'));
+test('isPendingPhoto ดูที่มีรหัส Drive หรือยัง', () =>
+  assertEq([isPendingPhoto({ id:'' }), isPendingPhoto({ id:'d1' })], [true, false]));
+
+test('photoRefs ส่งเฉพาะรูปที่ขึ้น Drive แล้ว', () => {
+  const refs = photoRefs([{ uid:'p1', id:'d1', name:'a.jpg', thumb:'ย่อ' }, { uid:'p2', id:'', full:'เต็ม' }]);
+  assertEq(refs, [{ uid:'p1', id:'d1', name:'a.jpg' }]);
+});
+
+test('mergePhotoList เก็บรูปย่อของเครื่องนี้ + รหัส Drive ของอีกเครื่อง', () => {
+  const got = mergePhotoList([{ uid:'p1', id:'', thumb:'ย่อ', full:'เต็ม' }], [{ uid:'p1', id:'d9', name:'a.jpg' }]);
+  assertEq([got.length, got[0].id, got[0].thumb, got[0].pending], [1, 'd9', 'ย่อ', false]);
+});
+test('mergePhotoList รูปใหม่จากเครื่องอื่นถูกเพิ่มเข้ามา', () => {
+  const got = mergePhotoList([{ uid:'p1', id:'d1' }], [{ uid:'p2', id:'d2' }]);
+  assertEq(got.map(p => p.uid).sort(), ['p1','p2']);
+});
+test('mergePhotoList รูปที่มีแต่ในเครื่อง ไม่ถูกลบทิ้ง', () =>
+  assertEq(mergePhotoList([{ uid:'p1', id:'', full:'เต็ม' }], []).length, 1));
+test('mergePhotoList รับ null ได้', () => assertEq(mergePhotoList(null, null), []));
+
+test('collectPendingPhotos เก็บรูปค้างครบทั้ง 3 ที่ (ตรวจ · ปิดงาน · ผัง)', () => {
+  const d = { extinguishers:[{ id:'f1', code:'FE-001' }],
+              inspections:[{ id:'i1', feId:'f1', date:'2026-08-01', photos:[{ uid:'p1', id:'', full:'x' }] }],
+              issues:[{ id:'s1', feId:'f1', closedDate:'2026-08-02', closePhotos:[{ uid:'p2', id:'', full:'y' }] }],
+              floorplans:[{ id:'pl1', name:'อาคาร 1', image:{ uid:'p3', id:'', full:'z' } }] };
+  const jobs = collectPendingPhotos(d);
+  assertEq(jobs.map(j => j.kind), ['ตรวจ','ปิดงาน','ผัง']);
+  assertEq(jobs[0].code, 'FE-001');                     // ชื่อไฟล์บน Drive จะได้อ้างถังถูกใบ
+  assertEq(pendingPhotoCount(d), 3);
+});
+test('collectPendingPhotos ไม่นับรูปที่ขึ้น Drive แล้ว', () =>
+  assertEq(pendingPhotoCount({ inspections:[{ id:'i1', photos:[{ uid:'p1', id:'d1' }] }] }), 0));
+test('collectPendingPhotos รับข้อมูลว่างได้', () => assertEq(pendingPhotoCount({}), 0));
+
+test('photoStats นับรูปและพื้นที่ในเครื่อง', () => {
+  const s = photoStats({ inspections:[{ id:'i1', photos:[{ uid:'p1', id:'d1', thumb:'ย่อ' }, { uid:'p2', id:'', full:'เต็ม' }] }],
+                         issues:[], floorplans:[] });
+  assertEq([s.total, s.onDrive, s.pending], [2, 1, 1]);
+});
+
+test('photoFileName อ่านรู้เรื่องและไม่มีอักขระต้องห้าม', () =>
+  assertEq(photoFileName('FE-001', 'ตรวจ', '2026-08-26', 0), 'FE-001_2026-08-26_ตรวจ_1.jpg'));
+test('photoFileName รหัสถังมีอักขระที่ Drive ไม่รับ → ถูกแทนที่', () =>
+  assertTrue(photoFileName('FE/001:A', 'ตรวจ', '2026-08-26', 1).indexOf('/') < 0));
+test('photoFileName ไม่มีรหัสถัง ยังได้ชื่อไฟล์ที่ใช้ได้', () =>
+  assertTrue(photoFileName('', 'ตรวจ', '2026-08-26', 0).startsWith('ไม่ระบุถัง')));
+
+test('debugDraft ไม่โชว์ base64 บนแผงดีบัก', () => {
+  const out = debugDraft({ feId:'f1', photos:[{ uid:'p1', id:'', thumb:'data:image/jpeg;base64,AAA', full:'data:image/jpeg;base64,BBB' }] });
+  assertTrue(JSON.stringify(out).indexOf('base64') < 0);
+  assertEq(out.photos, ['ในเครื่อง +ย่อ +เต็ม']);
 });
 
 test('parseSyncResponse อ่านคำตอบปกติ', () =>
