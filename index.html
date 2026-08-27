@@ -252,7 +252,9 @@ tr:last-child td{border-bottom:none}
 /* ---- กราฟบนหน้าภาพรวม ---- */
 /* กราฟ 12 เดือนกว้างกว่าจอมือถือ ให้เลื่อนในกล่องตัวเอง หน้าเว็บทั้งหน้าจะได้ไม่เลื่อนออกข้าง */
 .chartscroll{overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:4px}
-.chartscroll .chart{display:block; max-width:none}
+/* margin auto = กราฟที่แคบกว่ากรอบจะอยู่กึ่งกลาง (เดือนน้อยจะได้ไม่ชิดซ้ายโหว่ขวา)
+   ส่วนกราฟที่กว้างกว่ากรอบ margin auto ไม่มีผล การเลื่อนแนวนอนยังทำงานเหมือนเดิม */
+.chartscroll .chart{display:block; max-width:none; margin:0 auto}
 .legend{display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:10px; font-size:13.5px; color:var(--muted)}
 .legend .lg{display:inline-flex; align-items:center; gap:6px}
 .legend .lg i{width:12px; height:12px; border-radius:3px; flex:0 0 auto}
@@ -2436,6 +2438,12 @@ function issuesByMonth(issues, months){
   return months.map(k => idx.get(k));
 }
 
+/* คัดเฉพาะเดือนที่มีการอัปเดตจริง — เดือนที่ยอดเป็นศูนย์ไม่ต้องวาดลงกราฟ
+   (โรงงานเพิ่งเริ่มใช้ระบบ เดือนก่อนหน้ายังไม่มีข้อมูล กราฟจะได้ไม่โล่ง 11 ช่อง) */
+function withData(rows){
+  return (rows || []).filter(r => r && r.total > 0);
+}
+
 /* ---------- กราฟที่วาดเอง (โปรเจคนี้ไม่ใช้ไลบรารีกราฟจาก CDN) ---------- */
 
 /* กราฟแท่งซ้อนรายเดือน — rows = ผลจาก inspectionsByMonth/issuesByMonth
@@ -2445,7 +2453,9 @@ function monthlyStackSVG(rows, series, opts){
   const o = opts || {};
   const list = rows || [];
   if (!list.length) return '<p class="hint">ยังไม่มีข้อมูล</p>';
-  const W = 44, GAP = 12, PAD_L = 34, PAD_T = 18, H = 150, PAD_B = 34;
+  /* เหลือไม่กี่เดือน → ขยายแท่งให้เต็มพื้นที่ ไม่ให้กราฟดูโหว่และแท่งจิ๋วชิดซ้าย */
+  const W = list.length <= 2 ? 110 : list.length <= 4 ? 78 : list.length <= 6 ? 60 : 44;
+  const GAP = 12, PAD_L = 34, PAD_T = 18, H = 150, PAD_B = 34;
   const width = PAD_L + list.length * (W + GAP) + 10;
   const height = PAD_T + H + PAD_B;
   const max = Math.max(1, ...list.map(r => series.reduce((s,k) => s + (r[k.key] || 0), 0)));
@@ -2570,8 +2580,9 @@ function viewDashboard(){
   const defects = topDefects(DATA.inspections, 5);
   const c = summaryCounts(all);
   const months = monthKeys(DASH_MONTHS, today);
-  const insMonths = inspectionsByMonth(DATA.inspections, months);
-  const carMonths = issuesByMonth(DATA.issues, months);
+  /* กราฟแสดงเฉพาะเดือนที่มีการอัปเดตจริง — เดือนที่ไม่มีข้อมูลเลยไม่ต้องกินพื้นที่ */
+  const insMonths = withData(inspectionsByMonth(DATA.inspections, months));
+  const carMonths = withData(issuesByMonth(DATA.issues, months));
   const insTotal = insMonths.reduce((n,r) => n + r.total, 0);
   const insFail  = insMonths.reduce((n,r) => n + r.fail, 0);
   const thisMonth = insMonths[insMonths.length - 1] || { pass:0, fail:0, total:0, label:'' };
@@ -2616,15 +2627,16 @@ function viewDashboard(){
       <p class="mono-note">รวม ${all.length} ใบ · ในนี้เป็นถังที่ไม่พร้อมใช้ (ส่งซ่อม/ปลดระวาง) ${notReady.length} ใบ</p>
     </div>
 
-    <h2 class="sec">ผลตรวจรายเดือน ${DASH_MONTHS} เดือนล่าสุด</h2>
+    <h2 class="sec">ผลตรวจรายเดือน${insMonths.length ? ` <span class="pill gold" style="margin-left:6px">${insMonths.length} เดือนที่มีการตรวจ</span>` : ''}</h2>
     <div class="card">
       ${monthlyStackSVG(insMonths, [
         { key:'fail', label:'ผิดปกติ (ไม่ผ่าน)', color:'#ef4444' },
         { key:'pass', label:'ปกติ (ผ่านทุกข้อ)', color:'#22c55e' }
       ], { title:'ผลตรวจรายเดือน' })}
       <p class="mono-note">${insTotal
-        ? `ตรวจไปทั้งหมด ${insTotal} ครั้ง · ผิดปกติ ${insFail} ครั้ง (${Math.round(insFail*100/insTotal)}%) · เดือน ${esc(thisMonth.label)} ตรวจแล้ว ${thisMonth.total} ครั้ง`
+        ? `ตรวจไปทั้งหมด ${insTotal} ครั้ง · ผิดปกติ ${insFail} ครั้ง (${Math.round(insFail*100/insTotal)}%) · เดือนล่าสุดที่มีการตรวจ ${esc(thisMonth.label)} — ${thisMonth.total} ครั้ง`
         : 'ยังไม่มีบันทึกการตรวจใน ' + DASH_MONTHS + ' เดือนที่ผ่านมา'}</p>
+      ${insMonths.length ? `<p class="hint" style="margin:6px 0 0">แสดงเฉพาะเดือนที่มีการบันทึกการตรวจ ภายใน ${DASH_MONTHS} เดือนล่าสุด</p>` : ''}
     </div>
 
     <h2 class="sec">ต้องทำตอนนี้ ${ac.total ? `<span class="pill over" style="margin-left:6px">${ac.total} เรื่อง</span>` : ''}</h2>
@@ -5446,6 +5458,35 @@ test('issuesByMonth งานที่ยังไม่ปิด นับเ�
   assertEq([rows[0].opened, rows[0].closed], [1,0]);
 });
 
+test('withData ตัดเดือนที่ไม่มีข้อมูลออก', () => {
+  const rows = inspectionsByMonth([{ date:'2026-08-02', overall:'pass' }], monthKeys(12,'2026-08-27'));
+  assertEq([rows.length, withData(rows).length, withData(rows)[0].label], [12, 1, 'ส.ค.69']);
+});
+test('withData เดือนว่างที่คั่นกลางก็ถูกตัด', () => {
+  const rows = inspectionsByMonth([{ date:'2026-06-02', overall:'pass' }, { date:'2026-08-02', overall:'fail' }],
+                                  monthKeys(12,'2026-08-27'));
+  assertEq(withData(rows).map(r => r.label), ['มิ.ย.69','ส.ค.69']);
+});
+test('withData ไม่มีข้อมูลเลย → ว่าง (กราฟจะขึ้นข้อความแทน)', () =>
+  assertEq(withData(inspectionsByMonth([], monthKeys(12,'2026-08-27'))).length, 0));
+test('withData รับ null ได้', () => assertEq(withData(null), []));
+test('withData ใช้กับกราฟงานแก้ไขได้ด้วย', () => {
+  const rows = issuesByMonth([{ openedDate:'2026-08-01', closedDate:'' }], monthKeys(12,'2026-08-27'));
+  assertEq(withData(rows).map(r => r.label), ['ส.ค.69']);
+});
+test('กราฟเหลือแท่งเดียว แท่งกว้างขึ้นและยังวาดได้', () => {
+  const rows = withData(inspectionsByMonth([{ date:'2026-08-02', overall:'pass' }], monthKeys(12,'2026-08-27')));
+  const svg = monthlyStackSVG(rows, [{ key:'pass', label:'ผ่าน', color:'#22c55e' }]);
+  assertTrue(svg.includes('width="110"'), 'แท่งเดียวต้องกว้าง 110');
+  assertTrue(svg.includes('ส.ค.69') && !svg.includes('NaN'), 'ต้องมีชื่อเดือนและไม่มี NaN');
+});
+test('กราฟหลายแท่งใช้ความกว้างปกติ', () => {
+  const many = [];
+  for (let i = 1; i <= 8; i++) many.push({ date:'2026-0' + (i) + '-02', overall:'pass' });
+  const rows = withData(inspectionsByMonth(many, monthKeys(12,'2026-08-27')));
+  assertTrue(monthlyStackSVG(rows, [{ key:'pass', label:'ผ่าน', color:'#22c55e' }]).includes('width="44"'),
+             '8 เดือนต้องใช้แท่งกว้าง 44');
+});
 test('monthlyStackSVG ไม่มีข้อมูลเลย → ข้อความแทนกราฟ', () =>
   assertTrue(monthlyStackSVG([], [{key:'pass',label:'ผ่าน',color:'#0f0'}]).includes('ยังไม่มีข้อมูล')));
 test('monthlyStackSVG วาดแท่งครบทุกเดือนและมี aria-label', () => {
