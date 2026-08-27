@@ -248,6 +248,19 @@ tr:last-child td{border-bottom:none}
 .barrow .b-track i{display:block; height:100%; border-radius:999px}
 .barrow .b-n{flex:0 0 auto; min-width:28px; text-align:right; font-variant-numeric:tabular-nums}
 .barrow .b-sub{flex:0 0 auto; font-size:12.5px; color:#fca5a5}
+
+/* ---- กราฟบนหน้าภาพรวม ---- */
+/* กราฟ 12 เดือนกว้างกว่าจอมือถือ ให้เลื่อนในกล่องตัวเอง หน้าเว็บทั้งหน้าจะได้ไม่เลื่อนออกข้าง */
+.chartscroll{overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:4px}
+.chartscroll .chart{display:block; max-width:none}
+.legend{display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:10px; font-size:13.5px; color:var(--muted)}
+.legend .lg{display:inline-flex; align-items:center; gap:6px}
+.legend .lg i{width:12px; height:12px; border-radius:3px; flex:0 0 auto}
+.legend .lg b{color:var(--txt); font-variant-numeric:tabular-nums}
+.healthbar{display:flex; width:100%; height:30px; border-radius:8px; overflow:hidden; border:1px solid var(--line)}
+.healthbar .hb{display:flex; align-items:center; justify-content:center;
+  font-size:13px; font-weight:700; color:#0e1626; min-width:0; overflow:hidden; font-variant-numeric:tabular-nums}
+.mono-note{font-size:13.5px; color:var(--muted); margin:9px 0 0}
 .alert{
   display:flex; align-items:center; gap:11px; width:100%; text-align:left; cursor:pointer; color:var(--txt);
   background:var(--card); border:1px solid var(--line); border-left:3px solid var(--muted);
@@ -394,7 +407,7 @@ tr:last-child td{border-bottom:none}
 const APP_VERSION = '1.0 (เฟส 1)';
 const COMPANY = 'Chusilp Group Trading Co., Ltd.';   // แบรนด์ถาวร — ไม่ใช่ค่าตั้ง แก้ได้ที่บรรทัดนี้จุดเดียว
 const LS_KEY = 'fireguard_data';
-const SCHEMA_VERSION = 3;                      // v2 = เพิ่มผังจุดติดตั้ง (เฟส 7) · v3 = รูปเก็บบน Google Drive
+const SCHEMA_VERSION = 4;                      // v2 = เพิ่มผังจุดติดตั้ง (เฟส 7) · v3 = รูปเก็บบน Google Drive · v4 = สุสาน (จำรายการที่ลบ กันซิงก์ดึงกลับ)
 
 /* ชนิดสารดับเพลิง — weigh:true = ต้องชั่งน้ำหนักแทนการดูเกจแรงดัน */
 const AGENT_TYPES = [
@@ -441,6 +454,7 @@ const RESULTS = [
 ];
 
 const TH_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+const DASH_MONTHS = 12;                        // กราฟบนหน้าภาพรวมย้อนหลังกี่เดือน
 
 /* ============ เฟส 4: งานแก้ไข (CAR) + บันทึกบริการ ============ */
 const ISSUE_STATUSES = [
@@ -517,6 +531,7 @@ function defaultData(){
     issues: [],
     services: [],
     usageEvents: [],
+    deleted: [],                       // สุสาน: [{ id, coll, at }] — จำว่าอะไรถูกลบ กันซิงก์ดึงกลับมา
     inspectors: [],
     settings: {
       siteName: 'โรงงานของฉัน',
@@ -559,7 +574,11 @@ function migrate(d){
       (p && p.image) ? { ...p, image: normalizePhoto(p.image) } : p);
     d.version = 3;
   }
-  /* v4+ ในอนาคต: เพิ่มบล็อก if (d.version < 4) {...; d.version = 4;} ตรงนี้ */
+  if (d.version < 4){                                  // v3 → v4: เพิ่มสุสาน (รายการที่ลบแล้ว)
+    if (!Array.isArray(d.deleted)) d.deleted = [];
+    d.version = 4;
+  }
+  /* v5+ ในอนาคต: เพิ่มบล็อก if (d.version < 5) {...; d.version = 5;} ตรงนี้ */
   d.version = SCHEMA_VERSION;
   return d;
 }
@@ -834,13 +853,11 @@ function filterList(list, f){
   });
 }
 
+/* เรียงตามรหัสถังล้วน (numeric:true → FE-2 มาก่อน FE-10 ไม่ใช่เรียงแบบตัวอักษร)
+   เดินตรวจหน้างานไล่ตามลำดับถังจริง หาง่ายกว่าเรียงตามความด่วน — ถังเลยกำหนดยังกรองดูได้ที่ชิปด้านบน */
 function sortForList(list){
-  const rank = { overdue:0, soon:1, never:2, ok:3 };
-  return [...list].sort((a,b) => {
-    const r = (rank[a._due] ?? 9) - (rank[b._due] ?? 9);
-    if (r !== 0) return r;
-    return String(a.code||'').localeCompare(String(b.code||''), 'th', { numeric:true });
-  });
+  return [...list].sort((a,b) =>
+    String(a.code||'').localeCompare(String(b.code||''), 'th', { numeric:true }));
 }
 
 /* ============ เฟส 3: แจ้งเตือนครบกำหนด + สถิติ ============ */
@@ -1556,6 +1573,44 @@ function recStamp(r){
   return String((r && (r.updatedAt || r.createdAt)) || '');
 }
 
+/* ---------- สุสาน (tombstone): จำว่าอะไรถูกลบไปแล้ว ----------
+   จำเป็นเพราะการรวมข้อมูลเป็นแบบ "ไม่ลบของใครทิ้ง" — ถ้าไม่จำ รายการที่ลบในเครื่องนี้
+   จะถูกดึงกลับมาจาก Sheets ในรอบซิงก์ถัดไป (อาการ "ลบแล้วถังฟื้น")
+   เก็บถาวร ไม่ล้างทิ้งเอง — มือถือที่ปิดไว้เป็นเดือนกลับมาซิงก์ ต้องยังรู้ว่าถังใบนั้นถูกลบไปแล้ว */
+function deletedKey(coll, id){ return String(coll || '') + '|' + String(id || ''); }
+
+/* คัดเฉพาะรายการสุสานที่ใช้ได้จริง (มีทั้งกลุ่มและ id) — กันข้อมูลเพี้ยนจากชีตที่คนไปพิมพ์เอง */
+function normalizeDeleted(list){
+  const out = [];
+  const seen = new Set();
+  for (const t of list || []){
+    if (!t || !t.id || !t.coll) continue;
+    const k = deletedKey(t.coll, t.id);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ id:String(t.id), coll:String(t.coll), at:String(t.at || '') });
+  }
+  return out;
+}
+
+/* รวมสุสาน 2 ฝั่งแบบ union — ห้ามลบรายการในสุสานทิ้ง ไม่งั้นของที่ลบแล้วจะฟื้นอีกรอบ */
+function mergeDeleted(local, remote){
+  return normalizeDeleted([...(local || []), ...(remote || [])]);
+}
+
+function deletedKeySet(list){
+  return new Set(normalizeDeleted(list).map(t => deletedKey(t.coll, t.id)));
+}
+
+/* บันทึกลงสุสาน — เรียกทุกครั้งที่ลบข้อมูลจริงออกจากเครื่อง */
+function recordDeletion(data, coll, id){
+  if (!data || !coll || !id) return;
+  if (!Array.isArray(data.deleted)) data.deleted = [];
+  const k = deletedKey(coll, id);
+  if (data.deleted.some(t => t && deletedKey(t.coll, t.id) === k)) return;
+  data.deleted.push({ id:String(id), coll:String(coll), at:new Date().toISOString() });
+}
+
 /* รวมข้อมูล 2 ฝั่งด้วย id — ไม่ลบของใครทิ้ง ฝั่งที่แก้ล่าสุดชนะ
    keepLocalKeys = ช่องที่ห้ามให้ค่าจากคลาวด์มาทับของเดิมถ้าคลาวด์ไม่มี (เช่นรูปที่ไม่ได้ซิงก์ขึ้นไป) */
 function mergeRecords(local, remote, keepLocalKeys){
@@ -1585,16 +1640,25 @@ function mergeRecords(local, remote, keepLocalKeys){
 
 const SYNC_KEEP_KEYS = { inspections:['photos'], issues:['closePhotos'] };
 
-/* รวมทุกกลุ่มข้อมูล คืนชุดใหม่ + สรุปว่าเพิ่ม/อัปเดตอะไรไปบ้าง */
+/* รวมทุกกลุ่มข้อมูล คืนชุดใหม่ + สรุปว่าเพิ่ม/อัปเดตอะไรไปบ้าง
+   สุสานของสองฝั่งถูกรวมก่อน แล้วกรองรายการที่อยู่ในสุสานออกจากทั้งสองฝั่ง
+   — เครื่องที่ลบจะไม่ได้ของคืน และเครื่องอื่นจะลบตามในรอบซิงก์ของตัวเอง */
 function mergeAll(localData, remoteData){
   const out = { ...localData };
   const stat = {};
+  const tomb = mergeDeleted(localData && localData.deleted, remoteData && remoteData.deleted);
+  const gone = deletedKeySet(tomb);
+  out.deleted = tomb;
+  let removed = 0;                                     // ของที่ถูกลบตามสุสานของเครื่องอื่น
   for (const key of SYNC_COLLECTIONS){
-    const r = mergeRecords(localData[key] || [], (remoteData && remoteData[key]) || [], SYNC_KEEP_KEYS[key]);
+    const alive = list => (list || []).filter(r => !(r && r.id && gone.has(deletedKey(key, r.id))));
+    const localAlive = alive(localData[key]);
+    removed += ((localData[key] || []).length - localAlive.length);
+    const r = mergeRecords(localAlive, alive((remoteData && remoteData[key]) || []), SYNC_KEEP_KEYS[key]);
     out[key] = r.list;
     stat[key] = { added:r.added, updated:r.updated };
   }
-  return { data: out, stat };
+  return { data: out, stat, removed };
 }
 
 function syncStatSummary(stat){
@@ -1629,6 +1693,7 @@ function syncPayload(action, data, token){
   const clean = stripPhotos(data);
   const body = {};
   for (const k of SYNC_COLLECTIONS) body[k] = clean[k] || [];
+  body.deleted    = normalizeDeleted(data.deleted);     // สุสานต้องขึ้นไปด้วย เครื่องอื่นถึงจะลบตาม
   body.inspectors = data.inspectors || [];
   return { ...base, data: body };
 }
@@ -2234,6 +2299,11 @@ function inspRow(ins){
       ${ins.note ? `<div class="hint" style="margin-top:5px">📝 ${esc(ins.note)}</div>` : ''}
       ${(ins.photos && ins.photos.length) ? `<div class="thumbs">${normalizePhotoList(ins.photos).map((p,i) =>
         `<div class="thumb"><img src="${esc(photoThumbSrc(p))}" alt="รูปการตรวจ ${i+1}" data-act="viewPhoto" data-src="${esc(photoFullSrc(p))}" data-fid="${esc(p.id)}" data-title="รูปการตรวจ ${i+1}">${p.id ? '' : '<span class="pendmark" title="ยังไม่ได้อัปขึ้น Drive">☁︎</span>'}</div>`).join('')}</div>` : ''}
+      <div class="row" style="margin-top:10px">
+        <span class="right hint">${ins.updatedAt ? 'แก้ไขล่าสุด ' + thaiDate(todayISO(new Date(ins.updatedAt))) : ''}</span>
+        <button class="btn sm" data-act="editInspection" data-id="${esc(ins.id)}">✏️ แก้ไขผลตรวจ</button>
+        <button class="btn sm danger" data-act="askDeleteInspection" data-id="${esc(ins.id)}">🗑 ลบ</button>
+      </div>
     </div>`;
 }
 
@@ -2253,8 +2323,10 @@ function viewInspect(){
     </div>
 
     <div class="card">
-      <div class="row"><h2 style="margin:0; font-size:22px">ตรวจถัง ${esc(raw.code)}</h2></div>
+      <div class="row"><h2 style="margin:0; font-size:22px">${d.editId ? 'แก้ไขผลตรวจถัง' : 'ตรวจถัง'} ${esc(raw.code)}</h2>
+        ${d.editId ? '<span class="pill gold">โหมดแก้ไข</span>' : ''}</div>
       <p class="hint">${esc(ag.name)} · 📍 ${esc([raw.building, raw.zone, raw.point].filter(Boolean).join(' · '))}</p>
+      ${d.editId ? '<p class="hint">บันทึกแล้วจะ<b>เขียนทับใบเดิม</b> ไม่เกิดใบใหม่ · งานแก้ไข (CAR) ที่เปิดค้างไว้จากใบนี้จะไม่ถูกปิดให้อัตโนมัติ</p>' : ''}
       <div class="grid2">
         <div>
           <label class="f">รอบการตรวจ</label>
@@ -2309,11 +2381,132 @@ function viewInspect(){
       <textarea placeholder="บันทึกเพิ่มเติม (ถ้ามี)" data-act="draft" data-key="note">${esc(d.note)}</textarea>
     </div>
     <div class="row" style="margin:14px 0 30px">
-      <button class="btn primary block" data-act="saveInspect">💾 บันทึกผลการตรวจ</button>
+      <button class="btn primary block" data-act="saveInspect">💾 ${d.editId ? 'บันทึกการแก้ไข' : 'บันทึกผลการตรวจ'}</button>
     </div>`;
 }
 
 /* ---------- Dashboard ---------- */
+/* ---------- ข้อมูลรายเดือนสำหรับกราฟ ---------- */
+
+/* คีย์เดือนย้อนหลัง n เดือน จบที่เดือนของ today — ['2025-09' … '2026-08'] */
+function monthKeys(n, today){
+  const t = isValidISO(today) ? today : todayISO();
+  let [y, m] = t.split('-').map(Number);
+  const out = [];
+  for (let i = n - 1; i >= 0; i--){
+    let yy = y, mm = m - i;
+    while (mm <= 0){ mm += 12; yy--; }
+    out.push(yy + '-' + String(mm).padStart(2,'0'));
+  }
+  return out;
+}
+
+/* '2026-08' → 'ส.ค.69' (สั้นเพราะต้องวางใต้แท่งกราฟ 12 แท่ง) */
+function monthLabel(ym){
+  const [y, m] = String(ym || '').split('-').map(Number);
+  if (!y || !m || m < 1 || m > 12) return '—';
+  return TH_MONTHS[m-1] + String((y + 543) % 100).padStart(2,'0');
+}
+
+function monthOf(iso){ return isValidISO(iso) ? String(iso).slice(0,7) : ''; }
+
+/* ผลตรวจรายเดือน: กี่ใบผ่าน กี่ใบไม่ผ่าน — "ผิดปกติ" = ผลตรวจไม่ผ่าน (ตามที่เดย์กำหนด) */
+function inspectionsByMonth(inspections, months){
+  const idx = new Map(months.map(k => [k, { key:k, label:monthLabel(k), pass:0, fail:0, total:0 }]));
+  for (const ins of inspections || []){
+    const row = idx.get(monthOf(ins && ins.date));
+    if (!row) continue;
+    const overall = (ins.overall === 'fail' || ins.overall === 'pass')
+      ? ins.overall : summarize(ins.items).overall;          // ใบเก่าที่ไม่มี overall คิดจากรายข้อ
+    if (overall === 'fail') row.fail++; else row.pass++;
+    row.total++;
+  }
+  return months.map(k => idx.get(k));
+}
+
+/* งานแก้ไขรายเดือน: เปิดกี่ใบ ปิดกี่ใบ — ดูว่าตามปิดงานทันที่เปิดไหม */
+function issuesByMonth(issues, months){
+  const idx = new Map(months.map(k => [k, { key:k, label:monthLabel(k), opened:0, closed:0, total:0 }]));
+  for (const is of issues || []){
+    const o = idx.get(monthOf(is && is.openedDate));
+    if (o){ o.opened++; o.total++; }
+    const c = idx.get(monthOf(is && is.closedDate));
+    if (c){ c.closed++; c.total++; }
+  }
+  return months.map(k => idx.get(k));
+}
+
+/* ---------- กราฟที่วาดเอง (โปรเจคนี้ไม่ใช้ไลบรารีกราฟจาก CDN) ---------- */
+
+/* กราฟแท่งซ้อนรายเดือน — rows = ผลจาก inspectionsByMonth/issuesByMonth
+   series = [{ key, label, color }] เรียงจากล่างขึ้นบน
+   ทุกแท่งมีตัวเลขกำกับและมี aria-label เสมอ ไม่สื่อความหมายด้วยสีอย่างเดียว */
+function monthlyStackSVG(rows, series, opts){
+  const o = opts || {};
+  const list = rows || [];
+  if (!list.length) return '<p class="hint">ยังไม่มีข้อมูล</p>';
+  const W = 44, GAP = 12, PAD_L = 34, PAD_T = 18, H = 150, PAD_B = 34;
+  const width = PAD_L + list.length * (W + GAP) + 10;
+  const height = PAD_T + H + PAD_B;
+  const max = Math.max(1, ...list.map(r => series.reduce((s,k) => s + (r[k.key] || 0), 0)));
+  const niceMax = max <= 5 ? 5 : Math.ceil(max / 5) * 5;     // ขั้นบันไดสวยๆ ไม่ใช่เลขห้อย
+  const y = v => PAD_T + H - (v / niceMax) * H;
+
+  const grid = [0, .25, .5, .75, 1].map(f => {
+    const v = Math.round(niceMax * f);
+    return `<line x1="${PAD_L-6}" x2="${width-6}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(190,214,255,.13)" stroke-width="1"/>
+            <text x="${PAD_L-10}" y="${y(v)+4}" text-anchor="end" font-size="10.5" fill="#a2b3cc">${v}</text>`;
+  }).join('');
+
+  const bars = list.map((r, i) => {
+    const x = PAD_L + i * (W + GAP);
+    const total = series.reduce((s,k) => s + (r[k.key] || 0), 0);
+    let cursor = PAD_T + H;
+    const segs = series.map(k => {
+      const n = r[k.key] || 0;
+      if (!n) return '';
+      const h = (n / niceMax) * H;
+      cursor -= h;
+      const label = n >= 1 && h >= 15
+        ? `<text x="${x + W/2}" y="${cursor + h/2 + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#0e1626">${n}</text>` : '';
+      return `<rect x="${x}" y="${cursor.toFixed(1)}" width="${W}" height="${h.toFixed(1)}" fill="${k.color}" rx="3">
+                <title>${esc(r.label)} · ${esc(k.label)} ${n}</title></rect>${label}`;
+    }).join('');
+    return segs +
+      (total ? `<text x="${x + W/2}" y="${(PAD_T + H - (total/niceMax)*H - 6).toFixed(1)}" text-anchor="middle" font-size="11.5" font-weight="700" fill="#f1f5fb">${total}</text>` : '')
+      + `<text x="${x + W/2}" y="${PAD_T + H + 17}" text-anchor="middle" font-size="11" fill="${total ? '#a2b3cc' : '#5b6a83'}">${esc(r.label)}</text>`;
+  }).join('');
+
+  const totals = series.map(k => `${k.label} ${list.reduce((s,r) => s + (r[k.key]||0), 0)}`).join(' · ');
+  return `
+    <div class="chartscroll">
+      <svg class="chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"
+           role="img" aria-label="${esc((o.title || 'กราฟรายเดือน') + ' — ' + totals)}">
+        <line x1="${PAD_L-6}" x2="${width-6}" y1="${PAD_T+H}" y2="${PAD_T+H}" stroke="rgba(190,214,255,.24)" stroke-width="1"/>
+        ${grid}${bars}
+      </svg>
+    </div>
+    <div class="legend">${series.map(k =>
+      `<span class="lg"><i style="background:${k.color}"></i>${esc(k.label)} <b>${list.reduce((s,r) => s + (r[k.key]||0), 0)}</b></span>`).join('')}</div>`;
+}
+
+/* แถบสุขภาพระบบ — สัดส่วนถังตามสถานะกำหนดตรวจ อ่านปราดเดียวว่าทั้งโรงงานเป็นยังไง
+   วาดด้วย div ไม่ใช่ SVG เพราะแถบต้องยืดเต็มความกว้าง ถ้ายืด SVG ตัวหนังสือจะแบนตาม
+   segs = [{ label, n, color }] · ช่องที่แคบเกินไม่ยัดตัวเลขลงไป (อ่านจาก legend ใต้แถบแทน) */
+function healthBar(segs){
+  const list = (segs || []).filter(s => s && s.n > 0);
+  const total = list.reduce((s,x) => s + x.n, 0);
+  if (!total) return '<p class="hint">ยังไม่มีถังในระบบ</p>';
+  const pct = s => (s.n / total) * 100;
+  return `
+    <div class="healthbar" role="img" aria-label="สัดส่วนถังตามสถานะ — ${esc(list.map(s => s.label + ' ' + s.n + ' ใบ').join(' · '))}">
+      ${list.map(s => `<span class="hb" style="width:${pct(s).toFixed(2)}%; background:${s.color}"
+          title="${esc(s.label)} ${s.n} ใบ (${Math.round(pct(s))}%)">${pct(s) >= 9 ? s.n : ''}</span>`).join('')}
+    </div>
+    <div class="legend">${list.map(s =>
+      `<span class="lg"><i style="background:${s.color}"></i>${esc(s.label)} <b>${s.n}</b> <span class="hint">(${Math.round(pct(s))}%)</span></span>`).join('')}</div>`;
+}
+
 function donutSVG(percent, label, color){
   const p = Math.max(0, Math.min(100, Number(percent) || 0));
   const r = 42, circ = 2 * Math.PI * r;
@@ -2375,6 +2568,13 @@ function viewDashboard(){
   const byBuilding = countBy(all, fe => fe.building);
   const overdueByBuilding = new Map(countBy(all.filter(f => f._due === 'overdue'), fe => fe.building).map(x => [x.key, x.n]));
   const defects = topDefects(DATA.inspections, 5);
+  const c = summaryCounts(all);
+  const months = monthKeys(DASH_MONTHS, today);
+  const insMonths = inspectionsByMonth(DATA.inspections, months);
+  const carMonths = issuesByMonth(DATA.issues, months);
+  const insTotal = insMonths.reduce((n,r) => n + r.total, 0);
+  const insFail  = insMonths.reduce((n,r) => n + r.fail, 0);
+  const thisMonth = insMonths[insMonths.length - 1] || { pass:0, fail:0, total:0, label:'' };
 
   return `
     <h2 class="sec">ภาพรวมระบบ</h2>
@@ -2403,6 +2603,28 @@ function viewDashboard(){
         <div class="n" style="font-size:34px; font-weight:700; line-height:1.3">${DATA.inspections.length}</div>
         <div class="cap">บันทึกการตรวจสะสม<br>${DATA.inspectors.length} ผู้ตรวจในระบบ</div>
       </div>
+    </div>
+
+    <h2 class="sec">สถานะถังทั้งโรงงาน</h2>
+    <div class="card">
+      ${healthBar([
+        { label:'เลยกำหนดตรวจ', n:c.overdue, color:'#ef4444' },
+        { label:'ใกล้ครบกำหนด', n:c.soon,    color:'#f59e0b' },
+        { label:'ยังไม่เคยตรวจ', n:c.never,   color:'#64748b' },
+        { label:'อยู่ในกำหนด',  n:c.ok,      color:'#22c55e' }
+      ])}
+      <p class="mono-note">รวม ${all.length} ใบ · ในนี้เป็นถังที่ไม่พร้อมใช้ (ส่งซ่อม/ปลดระวาง) ${notReady.length} ใบ</p>
+    </div>
+
+    <h2 class="sec">ผลตรวจรายเดือน ${DASH_MONTHS} เดือนล่าสุด</h2>
+    <div class="card">
+      ${monthlyStackSVG(insMonths, [
+        { key:'fail', label:'ผิดปกติ (ไม่ผ่าน)', color:'#ef4444' },
+        { key:'pass', label:'ปกติ (ผ่านทุกข้อ)', color:'#22c55e' }
+      ], { title:'ผลตรวจรายเดือน' })}
+      <p class="mono-note">${insTotal
+        ? `ตรวจไปทั้งหมด ${insTotal} ครั้ง · ผิดปกติ ${insFail} ครั้ง (${Math.round(insFail*100/insTotal)}%) · เดือน ${esc(thisMonth.label)} ตรวจแล้ว ${thisMonth.total} ครั้ง`
+        : 'ยังไม่มีบันทึกการตรวจใน ' + DASH_MONTHS + ' เดือนที่ผ่านมา'}</p>
     </div>
 
     <h2 class="sec">ต้องทำตอนนี้ ${ac.total ? `<span class="pill over" style="margin-left:6px">${ac.total} เรื่อง</span>` : ''}</h2>
@@ -2436,6 +2658,16 @@ function viewDashboard(){
         <div class="stat"><div class="n">${isum.total}</div><div class="l">งานทั้งหมด</div></div>
       </div>
       ${isum.active ? `<div class="row" style="margin:8px 0"><button class="btn" data-act="tab" data-tab="issues">🔧 ไปจัดการงานแก้ไข ${isum.active} ใบ</button></div>` : ''}
+
+      ${carMonths.some(r => r.total) ? `
+        <div class="card">
+          <h3 style="margin-top:0">เปิด–ปิดงานแก้ไขรายเดือน</h3>
+          ${monthlyStackSVG(carMonths, [
+            { key:'opened', label:'เปิดงานใหม่', color:'#f59e0b' },
+            { key:'closed', label:'ปิดงานได้',   color:'#22d3ee' }
+          ], { title:'งานแก้ไขรายเดือน' })}
+          <p class="mono-note">แท่งที่ "เปิดใหม่" สูงกว่า "ปิดได้" ติดกันหลายเดือน = งานค้างสะสม ต้องเร่งตามปิด</p>
+        </div>` : ''}
 
       ${years.length ? `
         <h2 class="sec">ค่าใช้จ่ายงานบริการ</h2>
@@ -3129,7 +3361,7 @@ function renderDebug(){
   $('#debugBody').innerHTML = `
     <div><span class="k">view</span>: ${UI.view} · <span class="k">feId</span>: ${UI.feId || '—'}</div>
     <div><span class="k">today</span>: ${todayISO()} · <span class="k">warnDays</span>: ${DATA.settings.warnDays} · <span class="k">interval</span>: ${DATA.settings.defaultIntervalMonths}</div>
-    <div><span class="k">records</span>: ถัง ${DATA.extinguishers.length} · ตรวจ ${DATA.inspections.length} · ผู้ตรวจ ${DATA.inspectors.length}</div>
+    <div><span class="k">records</span>: ถัง ${DATA.extinguishers.length} · ตรวจ ${DATA.inspections.length} · ผู้ตรวจ ${DATA.inspectors.length} · <span class="k">สุสาน</span> ${(DATA.deleted||[]).length}</div>
     <div><span class="k">due</span>: เลย ${c.overdue} · ใกล้ ${c.soon} · ปกติ ${c.ok} · ไม่เคย ${c.never}</div>
     <div><span class="k">storage</span>: ${(storageBytes()/1024).toFixed(1)} KB · <span class="k">schema</span>: v${DATA.version}</div>
     <div><span class="k">filters</span>: q="${esc(UI.q)}" b="${esc(UI.fBuilding)}" a="${esc(UI.fAgent)}" s="${esc(UI.fStatus)}" d="${esc(UI.fDue)}"</div>
@@ -3290,6 +3522,66 @@ function startInspect(feId){
   window.scrollTo(0,0);
 }
 
+/* แยกข้อความที่ผู้ตรวจพิมพ์เอง ออกจากข้อความ "ข้อที่ไม่ผ่าน: …" ที่ระบบต่อท้ายให้ตอนบันทึก
+   ใบที่บันทึกตั้งแต่มี userNote ใช้ค่านั้นตรงๆ · ใบเก่าที่ไม่มี ต้องตัดจากข้อความรวม */
+function userNoteOf(ins){
+  if (!ins) return '';
+  if (typeof ins.userNote === 'string') return ins.userNote;
+  const t = String(ins.note || '');
+  const cut = t.indexOf(' · ข้อที่ไม่ผ่าน: ');
+  if (cut >= 0) return t.slice(0, cut);
+  return t.startsWith('ข้อที่ไม่ผ่าน: ') ? '' : t;
+}
+
+/* เปิดฟอร์มตรวจโดยเติมค่าจากใบเดิม — บันทึกแล้วเขียนทับใบเดิม ไม่สร้างใบใหม่ */
+function editInspection(insId){
+  const ins = DATA.inspections.find(x => x.id === insId);
+  if (!ins){ toast('ไม่พบบันทึกการตรวจใบนี้', 'bad'); return; }
+  const fe = DATA.extinguishers.find(f => f.id === ins.feId);
+  if (!fe){ toast('ไม่พบถังของบันทึกใบนี้', 'bad'); return; }
+  UI.inspectDraft = {
+    editId: ins.id,
+    feId: ins.feId,
+    type: ins.type || 'semiannual',
+    date: ins.date || todayISO(),
+    inspector: ins.inspector || '',
+    items: { ...(ins.items || {}) },
+    notes: { ...(ins.itemNotes || {}) },
+    photos: normalizePhotoList(ins.photos),
+    weightKg: (ins.weightKg === '' || ins.weightKg == null) ? '' : String(ins.weightKg),
+    note: userNoteOf(ins)
+  };
+  UI.view = 'inspect';
+  render();
+  window.scrollTo(0,0);
+}
+
+function askDeleteInspection(insId){
+  const ins = DATA.inspections.find(x => x.id === insId);
+  if (!ins) return;
+  const fe = DATA.extinguishers.find(f => f.id === ins.feId);
+  openModal(`
+    <h3 style="color:#fca5a5">ลบผลตรวจวันที่ ${thaiDate(ins.date)} ?</h3>
+    <p>ผลตรวจของถัง <b>${esc(fe ? fe.code : '')}</b> ใบนี้จะถูกลบถาวร <b>ย้อนกลับไม่ได้</b>
+       และกำหนดตรวจครั้งถัดไปจะถูกคำนวณใหม่จากใบที่เหลือ</p>
+    <p class="hint">งานแก้ไข (CAR) ที่เคยเปิดจากผลตรวจใบนี้ <b>จะไม่ถูกลบตาม</b> — ถ้าไม่ต้องการ ให้ไปปิดหรือลบที่แท็บงานแก้ไขเอง</p>
+    <div class="foot">
+      <button class="btn" data-act="closeModal">ยกเลิก</button>
+      <button class="btn danger" data-act="doDeleteInspection" data-id="${esc(insId)}">ยืนยันลบถาวร</button>
+    </div>`);
+}
+
+function doDeleteInspection(insId){
+  const ins = DATA.inspections.find(x => x.id === insId);
+  if (!ins) return;
+  recordDeletion(DATA, 'inspections', insId);          // จดสุสานก่อน ไม่งั้นซิงก์รอบหน้าดึงกลับมา
+  DATA.inspections = DATA.inspections.filter(x => x.id !== insId);
+  save();
+  closeModal();
+  toast('ลบผลตรวจวันที่ ' + thaiDate(ins.date) + ' แล้ว', 'bad');
+  render();
+}
+
 function saveInspection(){
   if (saving) return;
   const d = UI.inspectDraft;
@@ -3308,6 +3600,9 @@ function saveInspection(){
     .filter(it => items[it.key] === 'fail')
     .map(it => it.label + (d.notes[it.key] ? ' — ' + d.notes[it.key] : ''));
 
+  const itemNotes = {};                                   // เก็บหมายเหตุรายข้อไว้ต่างหาก จะได้แก้ไขย้อนหลังได้ไม่หาย
+  for (const it of list) if (items[it.key] === 'fail' && d.notes[it.key]) itemNotes[it.key] = d.notes[it.key];
+
   const rec = {
     id: uid('ins'),
     feId: d.feId,
@@ -3317,16 +3612,27 @@ function saveInspection(){
     items,
     weightKg: d.weightKg === '' ? '' : Number(d.weightKg),
     overall: s.overall,
+    userNote: d.note.trim(),                              // สิ่งที่ผู้ตรวจพิมพ์เอง (ไม่รวมข้อความที่ระบบต่อท้ายให้)
+    itemNotes,
     note: [d.note.trim(), failNotes.length ? 'ข้อที่ไม่ผ่าน: ' + failNotes.join(' | ') : '']
             .filter(Boolean).join(' · '),
     photos: normalizePhotoList(d.photos).slice(0, MAX_PHOTOS),
     createdAt: new Date().toISOString()
   };
-  DATA.inspections.push(rec);
+  /* แก้ไขผลตรวจเดิม = เขียนทับใบเดิม (คง id + createdAt ไว้ ประวัติจึงไม่ย้ายที่ และซิงก์รู้ว่าใบไหนใหม่กว่าจาก updatedAt) */
+  const editIdx = d.editId ? DATA.inspections.findIndex(x => x.id === d.editId) : -1;
+  if (editIdx >= 0){
+    const old = DATA.inspections[editIdx];
+    DATA.inspections[editIdx] = { ...rec, id: old.id, createdAt: old.createdAt || rec.createdAt,
+                                  updatedAt: new Date().toISOString() };
+  }else{
+    DATA.inspections.push(rec);
+  }
+  const saved = editIdx >= 0 ? DATA.inspections[editIdx] : rec;
   if (rec.inspector && !DATA.inspectors.includes(rec.inspector)) DATA.inspectors.push(rec.inspector);
 
   /* เฟส 4: ข้อที่ไม่ผ่าน → เปิดงานแก้ไขให้อัตโนมัติ (ข้อที่ยังมีงานค้างอยู่ ไม่เปิดซ้ำ) */
-  const newIssues = issuesFromInspection(d.feId, rec, list, d.notes, DATA.issues, rec.date);
+  const newIssues = issuesFromInspection(d.feId, saved, list, d.notes, DATA.issues, saved.date);
   if (newIssues.length) DATA.issues.push(...newIssues);
 
   save();
@@ -3335,9 +3641,9 @@ function saveInspection(){
   UI.inspectDraft = null;
   UI.feId = d.feId;
 
-  /* อยู่ในโหมดเดินตรวจ → นับความคืบหน้าแล้วกลับไปหน้ารอบต่อ */
+  /* อยู่ในโหมดเดินตรวจ → นับความคืบหน้าแล้วกลับไปหน้ารอบต่อ (การแก้ไขใบเก่าไม่นับเป็นความคืบหน้าของรอบ) */
   let roundMsg = '';
-  if (UI.round && UI.round.ids.includes(d.feId)){
+  if (!d.editId && UI.round && UI.round.ids.includes(d.feId)){
     if (!UI.round.done.includes(d.feId)) UI.round.done.push(d.feId);
     const p = roundProgress(UI.round);
     roundMsg = p.left ? ` · เหลืออีก ${p.left} ใบ` : ' · ครบทุกใบแล้ว 🎉';
@@ -3346,9 +3652,10 @@ function saveInspection(){
     UI.view = 'detail';
   }
 
+  const savedWord = d.editId ? 'แก้ไขแล้ว' : 'บันทึกแล้ว';
   toast((s.overall === 'fail'
-    ? `บันทึกแล้ว — พบข้อบกพร่อง ${s.fail} ข้อ` + (newIssues.length ? ` · เปิดงานแก้ไข ${newIssues.length} ใบ` : '')
-    : 'บันทึกแล้ว — ผ่านทุกข้อ ✓') + roundMsg, s.overall === 'fail' ? 'bad' : 'good', 3200);
+    ? `${savedWord} — พบข้อบกพร่อง ${s.fail} ข้อ` + (newIssues.length ? ` · เปิดงานแก้ไข ${newIssues.length} ใบ` : '')
+    : `${savedWord} — ผ่านทุกข้อ ✓`) + roundMsg, s.overall === 'fail' ? 'bad' : 'good', 3200);
   render();
   window.scrollTo(0,0);
   warnIfStorageHeavy();
@@ -3371,6 +3678,12 @@ function askDeleteFE(id){
 function doDeleteFE(id){
   const fe = DATA.extinguishers.find(f => f.id === id);
   if (!fe) return;
+  /* จดลงสุสานก่อน แล้วค่อยลบจริง — ไม่งั้นรอบซิงก์ถัดไปจะดึงถังใบนี้กลับมาจาก Sheets */
+  recordDeletion(DATA, 'extinguishers', id);
+  for (const r of DATA.inspections) if (r.feId === id) recordDeletion(DATA, 'inspections', r.id);
+  for (const r of DATA.issues)      if (r.feId === id) recordDeletion(DATA, 'issues', r.id);
+  for (const r of DATA.services)    if (r.feId === id) recordDeletion(DATA, 'services', r.id);
+  for (const r of DATA.usageEvents) if (r.feId === id) recordDeletion(DATA, 'usageEvents', r.id);
   DATA.extinguishers = DATA.extinguishers.filter(f => f.id !== id);
   DATA.inspections   = DATA.inspections.filter(i => i.feId !== id);
   DATA.issues        = DATA.issues.filter(x => x.feId !== id);
@@ -4310,6 +4623,7 @@ async function syncNow(silent){
     const up = await uploadPendingPhotos();      // อัปรูปที่ค้างก่อน แล้วค่อย push — รหัสรูปบน Drive จะได้ขึ้นไปพร้อมข้อมูล
     await gasCall('push');
     const note = (sum.added || sum.updated ? ('รับมาใหม่ ' + sum.added + ' · อัปเดต ' + sum.updated) : 'ข้อมูลตรงกันทั้งสองฝั่ง')
+               + (merged.removed ? ' · ลบตามเครื่องอื่น ' + merged.removed : '')
                + (up.done ? ' · อัปรูป ' + up.done + ' ใบ' : '')
                + (up.left ? ' · รูปค้างอีก ' + up.left + ' ใบ' : '');
     markSync('ok', note);
@@ -4400,6 +4714,9 @@ document.addEventListener('click', e => {
     case 'askDeleteFE': askDeleteFE(t.dataset.id); break;
     case 'doDeleteFE':  doDeleteFE(t.dataset.id); break;
     case 'startInspect':startInspect(t.dataset.id); break;
+    case 'editInspection':      editInspection(t.dataset.id); break;
+    case 'askDeleteInspection': askDeleteInspection(t.dataset.id); break;
+    case 'doDeleteInspection':  doDeleteInspection(t.dataset.id); break;
     case 'cancelInspect':
       UI.inspectDraft = null;
       UI.view = UI.round ? 'round' : 'detail';
@@ -4798,6 +5115,20 @@ test('validateInspection ครบถ้วน → ผ่าน', () => {
   assertEq(validateInspection({date:'2026-08-23',inspector:'เดย์',items,weightKg:''}, cl), []);
 });
 
+/* ---------- แก้ไขผลตรวจย้อนหลัง ---------- */
+test('userNoteOf ใบใหม่ใช้ userNote ตรงๆ', () =>
+  assertEq(userNoteOf({ userNote:'ฝุ่นเยอะ', note:'ฝุ่นเยอะ · ข้อที่ไม่ผ่าน: มาตรวัด' }), 'ฝุ่นเยอะ'));
+test('userNoteOf ใบเก่าตัดข้อความที่ระบบต่อท้ายออก', () =>
+  assertEq(userNoteOf({ note:'ฝุ่นเยอะ · ข้อที่ไม่ผ่าน: มาตรวัด — เข็มตก' }), 'ฝุ่นเยอะ'));
+test('userNoteOf ใบเก่าที่มีแต่ข้อความระบบ → ว่าง', () =>
+  assertEq(userNoteOf({ note:'ข้อที่ไม่ผ่าน: มาตรวัด' }), ''));
+test('userNoteOf ใบเก่าที่ผู้ตรวจพิมพ์เองล้วน', () =>
+  assertEq(userNoteOf({ note:'ล้างฝุ่นแล้ว' }), 'ล้างฝุ่นแล้ว'));
+test('userNoteOf ค่าว่าง/null ไม่ล่ม', () =>
+  assertEq([userNoteOf(null), userNoteOf({}), userNoteOf({ userNote:'' })], ['','','']));
+test('userNoteOf ไม่ตัดคำว่า "ข้อที่ไม่ผ่าน" ที่ผู้ตรวจพิมพ์เองกลางประโยค', () =>
+  assertEq(userNoteOf({ userNote:'ยังไม่รู้ว่าข้อที่ไม่ผ่าน: อันไหน' }), 'ยังไม่รู้ว่าข้อที่ไม่ผ่าน: อันไหน'));
+
 /* รวมข้อมูล / กรอง */
 test('withComputed ถังไม่มีประวัติตรวจ', () => {
   const fe = withComputed({id:'a',code:'FE-1',inspectionIntervalMonths:''}, [], {defaultIntervalMonths:6,warnDays:30}, '2026-08-23');
@@ -4829,9 +5160,16 @@ test('filterList กรองเลยกำหนด', () => {
                 {id:'2',code:'B',building:'บ',agentType:'co2',status:'active',_due:'ok'}];
   assertEq(filterList(list, {fDue:'overdue'}).map(x => x.code), ['A']);
 });
-test('sortForList เอาถังเลยกำหนดขึ้นก่อน', () => {
+test('sortForList เรียงตามรหัสถัง ไม่สนสถานะกำหนดตรวจ', () => {
   const list = [{code:'B',_due:'ok'},{code:'A',_due:'overdue'},{code:'C',_due:'soon'}];
-  assertEq(sortForList(list).map(x => x.code), ['A','C','B']);
+  assertEq(sortForList(list).map(x => x.code), ['A','B','C']);
+});
+test('sortForList เรียงเลขในรหัสแบบตัวเลข ไม่ใช่ตัวอักษร', () => {
+  const list = [{code:'FE-10'},{code:'FE-2'},{code:'FE-1'}];
+  assertEq(sortForList(list).map(x => x.code), ['FE-1','FE-2','FE-10']);
+});
+test('sortForList รหัสว่างไม่ทำให้ล่ม', () => {
+  assertEq(sortForList([{code:'FE-2'},{},{code:''}]).length, 3);
 });
 test('summaryCounts นับครบ', () => {
   const list = [{_due:'overdue',status:'active'},{_due:'soon',status:'repair'},{_due:'never',status:'active'}];
@@ -5058,6 +5396,77 @@ test('topDefects จำกัดจำนวนตามที่ขอ', () => 
   const ins = [{ items:{ body:'fail', hose:'fail', pin:'fail', label:'fail', access:'fail', mount:'fail' } }];
   assertEq(topDefects(ins, 5).length, 5);
 });
+
+/* ---- กราฟรายเดือนบนหน้าภาพรวม ---- */
+test('monthKeys ย้อนหลังตามจำนวนที่ขอ จบที่เดือนปัจจุบัน', () =>
+  assertEq(monthKeys(3, '2026-08-27'), ['2026-06','2026-07','2026-08']));
+test('monthKeys ข้ามปีถอยหลังถูกต้อง', () =>
+  assertEq(monthKeys(4, '2026-02-05'), ['2025-11','2025-12','2026-01','2026-02']));
+test('monthKeys ย้อนหลัง 12 เดือนได้ครบไม่ซ้ำ', () => {
+  const k = monthKeys(12, '2026-08-27');
+  assertEq([k.length, new Set(k).size, k[0], k[11]], [12, 12, '2025-09', '2026-08']);
+});
+test('monthKeys วันที่ผิดรูปแบบ → ใช้วันนี้แทน ไม่ล่ม', () =>
+  assertEq(monthKeys(2, 'พัง').length, 2));
+test('monthLabel เป็นเดือนไทย + ปี พ.ศ. 2 หลัก', () =>
+  assertEq([monthLabel('2026-08'), monthLabel('2026-01')], ['ส.ค.69','ม.ค.69']));
+test('monthLabel ค่าพัง → ขีด', () =>
+  assertEq([monthLabel(''), monthLabel('2026-13'), monthLabel(null)], ['—','—','—']));
+
+test('inspectionsByMonth นับผ่าน/ไม่ผ่านแยกเดือน', () => {
+  const m = monthKeys(2, '2026-08-27');
+  const rows = inspectionsByMonth([
+    { date:'2026-07-05', overall:'pass' }, { date:'2026-08-02', overall:'fail' },
+    { date:'2026-08-20', overall:'pass' }, { date:'2026-08-21', overall:'fail' }
+  ], m);
+  assertEq([rows[0].pass, rows[0].fail, rows[1].pass, rows[1].fail], [1,0,1,2]);
+});
+test('inspectionsByMonth ใบเก่าที่ไม่มี overall คิดจากรายข้อ', () => {
+  const m = monthKeys(1, '2026-08-27');
+  const rows = inspectionsByMonth([{ date:'2026-08-02', items:{ a:'fail', b:'pass' } }], m);
+  assertEq([rows[0].fail, rows[0].pass], [1,0]);
+});
+test('inspectionsByMonth ทิ้งใบที่อยู่นอกช่วงและวันที่พัง', () => {
+  const m = monthKeys(1, '2026-08-27');
+  const rows = inspectionsByMonth([{ date:'2020-01-01', overall:'pass' }, { date:'' }, null], m);
+  assertEq(rows[0].total, 0);
+});
+test('inspectionsByMonth ไม่มีข้อมูลก็คืนครบทุกเดือนเป็นศูนย์', () => {
+  const rows = inspectionsByMonth(null, monthKeys(3, '2026-08-27'));
+  assertEq([rows.length, rows[0].total, rows[2].total], [3,0,0]);
+});
+test('issuesByMonth นับเปิดและปิดคนละเดือนได้', () => {
+  const m = monthKeys(2, '2026-08-27');
+  const rows = issuesByMonth([{ openedDate:'2026-07-10', closedDate:'2026-08-15' }], m);
+  assertEq([rows[0].opened, rows[0].closed, rows[1].opened, rows[1].closed], [1,0,0,1]);
+});
+test('issuesByMonth งานที่ยังไม่ปิด นับเฉพาะขาเปิด', () => {
+  const m = monthKeys(1, '2026-08-27');
+  const rows = issuesByMonth([{ openedDate:'2026-08-01', closedDate:'' }], m);
+  assertEq([rows[0].opened, rows[0].closed], [1,0]);
+});
+
+test('monthlyStackSVG ไม่มีข้อมูลเลย → ข้อความแทนกราฟ', () =>
+  assertTrue(monthlyStackSVG([], [{key:'pass',label:'ผ่าน',color:'#0f0'}]).includes('ยังไม่มีข้อมูล')));
+test('monthlyStackSVG วาดแท่งครบทุกเดือนและมี aria-label', () => {
+  const rows = inspectionsByMonth([{ date:'2026-08-02', overall:'fail' }], monthKeys(3,'2026-08-27'));
+  const svg = monthlyStackSVG(rows, [{ key:'fail', label:'ไม่ผ่าน', color:'#ef4444' }], { title:'ทดสอบ' });
+  assertTrue(svg.includes('role="img"') && svg.includes('aria-label'), 'ต้องมี aria-label ให้คนใช้ screen reader');
+  assertTrue(svg.includes('ส.ค.69'), 'ต้องมีชื่อเดือนใต้แท่ง');
+});
+test('monthlyStackSVG ทุกเดือนเป็นศูนย์ก็ยังวาดได้ ไม่หารด้วยศูนย์', () => {
+  const svg = monthlyStackSVG(inspectionsByMonth([], monthKeys(3,'2026-08-27')),
+                              [{ key:'pass', label:'ผ่าน', color:'#22c55e' }]);
+  assertTrue(svg.includes('<svg') && !svg.includes('NaN'), 'ห้ามมี NaN ในกราฟ');
+});
+test('healthBar ไม่มีถัง → ข้อความแทนแถบ', () =>
+  assertTrue(healthBar([{ label:'ปกติ', n:0, color:'#0f0' }]).includes('ยังไม่มีถัง')));
+test('healthBar สัดส่วนรวมได้ 100% และไม่มี NaN', () => {
+  const h = healthBar([{ label:'เลยกำหนด', n:1, color:'#ef4444' }, { label:'ปกติ', n:3, color:'#22c55e' }]);
+  assertTrue(h.includes('25.00%') && h.includes('75.00%'), 'สัดส่วนต้องถูก');
+  assertTrue(!h.includes('NaN'), 'ห้ามมี NaN');
+});
+test('healthBar รับ null ได้', () => assertTrue(healthBar(null).includes('ยังไม่มีถัง')));
 
 /* ---- เฟส 4: งานแก้ไข (CAR) + บริการ + การใช้งานจริง ---- */
 test('addDays บวกวันปกติ', () => assertEq(addDays('2026-08-23', 14), '2026-09-06'));
@@ -5389,6 +5798,82 @@ test('mergeAll คลาวด์ว่าง ข้อมูลเดิมอ�
   assertEq([m.data.extinguishers.length, m.data.inspections.length], [1,1]);
 });
 
+/* ---------- สุสาน: ลบแล้วต้องไม่ฟื้น (v4) ---------- */
+const emptyColls = () => ({ extinguishers:[], inspections:[], issues:[], services:[], usageEvents:[], deleted:[] });
+
+test('recordDeletion จดลงสุสานพร้อมกลุ่มและเวลา', () => {
+  const d = emptyColls();
+  recordDeletion(d, 'extinguishers', 'f1');
+  assertEq([d.deleted.length, d.deleted[0].id, d.deleted[0].coll], [1, 'f1', 'extinguishers']);
+  assertTrue(!!d.deleted[0].at, 'ต้องมีเวลาที่ลบ');
+});
+test('recordDeletion กดลบซ้ำไม่จดซ้ำ', () => {
+  const d = emptyColls();
+  recordDeletion(d, 'extinguishers', 'f1');
+  recordDeletion(d, 'extinguishers', 'f1');
+  assertEq(d.deleted.length, 1);
+});
+test('recordDeletion id เดียวกันคนละกลุ่ม ถือเป็นคนละรายการ', () => {
+  const d = emptyColls();
+  recordDeletion(d, 'extinguishers', 'x');
+  recordDeletion(d, 'inspections', 'x');
+  assertEq(d.deleted.length, 2);
+});
+test('recordDeletion ค่าว่างไม่ทำให้สุสานเพี้ยน', () => {
+  const d = emptyColls();
+  recordDeletion(d, 'extinguishers', '');
+  recordDeletion(d, '', 'f1');
+  recordDeletion(null, 'extinguishers', 'f1');
+  assertEq(d.deleted.length, 0);
+});
+test('normalizeDeleted ตัดรายการเสียและตัวซ้ำทิ้ง', () => {
+  const got = normalizeDeleted([{ id:'a', coll:'issues' }, { id:'a', coll:'issues', at:'z' },
+                                { id:'', coll:'issues' }, { coll:'issues' }, null, { id:'b' }]);
+  assertEq(got, [{ id:'a', coll:'issues', at:'' }]);
+});
+test('mergeDeleted รวมสองฝั่งแบบไม่ทิ้งของใคร', () => {
+  const got = mergeDeleted([{ id:'a', coll:'extinguishers', at:'1' }],
+                           [{ id:'b', coll:'issues', at:'2' }, { id:'a', coll:'extinguishers', at:'1' }]);
+  assertEq(got.length, 2);
+});
+
+test('mergeAll ถังที่ลบแล้ว ไม่ถูกดึงกลับมาจากคลาวด์', () => {
+  const local  = { ...emptyColls(), deleted:[{ id:'f1', coll:'extinguishers', at:'2026-08-27T00:00:00.000Z' }] };
+  const remote = { extinguishers:[{ id:'f1', code:'FE-001' }, { id:'f2', code:'FE-002' }] };
+  const m = mergeAll(local, remote);
+  assertEq(m.data.extinguishers.map(f => f.id), ['f2']);
+});
+test('mergeAll สุสานจากเครื่องอื่น ลบของในเครื่องนี้ตาม', () => {
+  const local  = { ...emptyColls(), extinguishers:[{ id:'f1' }, { id:'f2' }] };
+  const remote = { extinguishers:[{ id:'f2' }], deleted:[{ id:'f1', coll:'extinguishers', at:'x' }] };
+  const m = mergeAll(local, remote);
+  assertEq([m.data.extinguishers.map(f => f.id), m.removed], [['f2'], 1]);
+});
+test('mergeAll สุสานคนละกลุ่ม ไม่ลบข้ามกลุ่มกัน', () => {
+  const local  = { ...emptyColls(), extinguishers:[{ id:'x' }], inspections:[{ id:'x' }],
+                   deleted:[{ id:'x', coll:'inspections', at:'t' }] };
+  const m = mergeAll(local, {});
+  assertEq([m.data.extinguishers.length, m.data.inspections.length], [1, 0]);
+});
+test('mergeAll สุสานถูกรวมและส่งต่อไปในข้อมูลชุดใหม่', () => {
+  const local  = { ...emptyColls(), deleted:[{ id:'a', coll:'issues', at:'1' }] };
+  const remote = { deleted:[{ id:'b', coll:'services', at:'2' }] };
+  assertEq(mergeAll(local, remote).data.deleted.length, 2);
+});
+test('mergeAll ไม่มีสุสานทั้งสองฝั่ง ทำงานเหมือนเดิม', () => {
+  const m = mergeAll({ extinguishers:[{id:'f1'}], inspections:[], issues:[], services:[], usageEvents:[] },
+                     { extinguishers:[{id:'f2'}] });
+  assertEq([m.data.extinguishers.length, m.removed, m.data.deleted.length], [2, 0, 0]);
+});
+test('syncPayload push แนบสุสานขึ้นไปด้วย', () => {
+  const d = { ...emptyColls(), inspectors:[], deleted:[{ id:'f1', coll:'extinguishers', at:'t' }] };
+  assertEq(syncPayload('push', d, '').data.deleted, [{ id:'f1', coll:'extinguishers', at:'t' }]);
+});
+test('migrate ข้อมูล v3 ได้สุสานว่างมาให้', () => {
+  const d = migrate({ version:3, extinguishers:[{id:'f1'}] });
+  assertEq([Array.isArray(d.deleted), d.deleted.length, d.extinguishers.length], [true, 0, 1]);
+});
+
 test('stripPhotos ส่งขึ้นแค่รหัสรูป ไม่ส่งตัวรูป', () => {
   const d = { inspections:[{ id:'i1', photos:[{ uid:'p1', id:'drive1', name:'a.jpg', thumb:'ย่อ', full:'' },
                                               { uid:'p2', id:'', thumb:'ย่อ2', full:'เต็ม2' }] }],
@@ -5417,7 +5902,7 @@ test('syncPayload push ส่งข้อมูลครบ 5 กลุ่ม �
               issues:[], services:[], usageEvents:[],
               inspectors:['เดย์'], settings:{ gasUrl:'ลับ', syncToken:'ลับ' } };
   const pl = syncPayload('push', d, 'tok');
-  assertEq(Object.keys(pl.data).sort(), ['extinguishers','inspections','inspectors','issues','services','usageEvents']);
+  assertEq(Object.keys(pl.data).sort(), ['deleted','extinguishers','inspections','inspectors','issues','services','usageEvents']);
   assertEq([pl.action, pl.token], ['push','tok']);
   assertEq(pl.data.inspections[0].photos, [{ uid:'p1', id:'drive1', name:'a.jpg' }]);
   assertTrue(pl.settings === undefined, 'ห้ามส่ง settings ขึ้นคลาวด์');
@@ -5448,7 +5933,7 @@ test('migrate v2 → v3 รูปเก่าไม่หายสักใบ',
   const d = migrate({ version:2, extinguishers:[], inspections:[{ id:'i1', photos:['รูปเก่า'] }],
                       issues:[{ id:'s1', closePhotos:['รูปปิดงาน'] }], services:[], usageEvents:[],
                       floorplans:[], inspectors:[], settings:{}, meta:{} });
-  assertEq(d.version, 3);
+  assertEq(d.version, SCHEMA_VERSION);                  // migrate จบที่รุ่นล่าสุดเสมอ (v3 = ขั้นแปลงรูป)
   assertEq([d.inspections[0].photos[0].full, d.issues[0].closePhotos[0].full], ['รูปเก่า', 'รูปปิดงาน']);
   assertEq(pendingPhotoCount(d), 2);                    // รูปเก่าทั้งสองใบเข้าคิวรออัปขึ้น Drive
 });
