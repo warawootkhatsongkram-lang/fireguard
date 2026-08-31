@@ -862,11 +862,23 @@ function filterList(list, f){
   });
 }
 
-/* เรียงตามรหัสถังล้วน (numeric:true → FE-2 มาก่อน FE-10 ไม่ใช่เรียงแบบตัวอักษร)
+/* ดึงเลขท้ายรหัสถัง (กลุ่มตัวเลขกลุ่มสุดท้าย) — FE-BF-001 → 1, FE-10 → 10, ไม่มีเลข → null */
+function codeTailNumber(code){
+  const m = String(code||'').match(/(\d+)(?!.*\d)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/* เรียงตามเลขท้ายรหัสถังจากน้อยไปมาก (FE-BF-001 → FE-PD-002 → FE-BF-003)
+   เลขเท่ากันหรือรหัสไม่มีเลข ค่อยเรียงตามรหัสเต็ม (numeric:true → FE-2 มาก่อน FE-10) — รหัสไม่มีเลขไปท้ายสุด
    เดินตรวจหน้างานไล่ตามลำดับถังจริง หาง่ายกว่าเรียงตามความด่วน — ถังเลยกำหนดยังกรองดูได้ที่ชิปด้านบน */
 function sortForList(list){
-  return [...list].sort((a,b) =>
-    String(a.code||'').localeCompare(String(b.code||''), 'th', { numeric:true }));
+  return [...list].sort((a,b) => {
+    const na = codeTailNumber(a.code), nb = codeTailNumber(b.code);
+    if (na !== null && nb !== null && na !== nb) return na - nb;
+    if (na === null && nb !== null) return 1;                    // รหัสไม่มีเลขไปอยู่ท้าย
+    if (na !== null && nb === null) return -1;
+    return String(a.code||'').localeCompare(String(b.code||''), 'th', { numeric:true });
+  });
 }
 
 /* ============ เฟส 3: แจ้งเตือนครบกำหนด + สถิติ ============ */
@@ -5494,6 +5506,17 @@ test('sortForList เรียงเลขในรหัสแบบตัว�
 });
 test('sortForList รหัสว่างไม่ทำให้ล่ม', () => {
   assertEq(sortForList([{code:'FE-2'},{},{code:''}]).length, 3);
+});
+test('sortForList เรียงตามเลขท้ายข้ามอาคาร ไม่จับกลุ่มตาม prefix', () => {
+  const list = [{code:'FE-PD-002'},{code:'FE-BF-003'},{code:'FE-BF-001'}];
+  assertEq(sortForList(list).map(x => x.code), ['FE-BF-001','FE-PD-002','FE-BF-003']);
+});
+test('sortForList เลขท้ายเท่ากัน เรียงตามรหัสเต็ม', () => {
+  const list = [{code:'FE-PD-001'},{code:'FE-BF-001'}];
+  assertEq(sortForList(list).map(x => x.code), ['FE-BF-001','FE-PD-001']);
+});
+test('sortForList รหัสไม่มีตัวเลขไปอยู่ท้ายสุด', () => {
+  assertEq(sortForList([{code:'ถังสำรอง'},{code:'FE-BF-002'}]).map(x => x.code), ['FE-BF-002','ถังสำรอง']);
 });
 test('summaryCounts นับครบ', () => {
   const list = [{_due:'overdue',status:'active'},{_due:'soon',status:'repair'},{_due:'never',status:'active'}];
