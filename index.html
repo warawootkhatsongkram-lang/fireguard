@@ -345,6 +345,8 @@ tr:last-child td{border-bottom:none}
 .signs{display:flex; gap:22px; margin-top:30px; flex-wrap:wrap}
 .sign{flex:1 1 30%; min-width:170px; text-align:center; font-size:13.5px; color:var(--muted)}
 .sign .line{border-top:1px dotted var(--line2); padding-top:7px; margin-top:34px}
+.sign-role{margin:2px 0 1px}
+.sign-in{width:100%; margin-top:8px; padding:6px 8px; font-size:13px; text-align:center}
 .rep-note{font-size:12.5px; color:var(--muted); margin-top:12px}
 .tl{border-left:2px solid var(--line2); margin-left:8px; padding-left:14px}
 .tl .ev{position:relative; margin:12px 0}
@@ -363,6 +365,7 @@ tr:last-child td{border-bottom:none}
   .report tr{page-break-inside:avoid}
   .report .pill{border-color:#888 !important; color:#000 !important; background:none !important}
   .sign .line{border-top:1px solid #000}
+  .report .sign-name, .report .sign-role{color:#000 !important}
   .tl{border-left-color:#999}
   .tl .ev .d{color:#000}
 }
@@ -518,6 +521,7 @@ let UI = {                             // สถานะหน้าจอ ไ�
   issueFilter:'active',                // ตัวกรองหน้างานแก้ไข: active | overdue | open | progress | done | cancel | all
   formDraft:null,                      // ฟอร์มใน modal (งานแก้ไข / บริการ / การใช้งานจริง)
   report:null,                         // ตั้งค่าหน้ารายงาน { kind, from, to, building, feId }
+  repPick:[],                          // id ผลตรวจที่ติ๊กเลือกไว้ในตารางรายงาน (แก้/ลบหลายรายการ)
   importPreview:null,                  // ผลอ่านไฟล์ CSV ที่รอยืนยันนำเข้า
   restoreCandidate:null,               // ข้อมูลจากไฟล์สำรองที่รอยืนยันกู้คืน
   scanning:false,
@@ -542,7 +546,10 @@ function defaultData(){
       gasUrl: '',
       baseUrl: '',
       syncToken: '',
-      autoSync: false
+      autoSync: false,
+      signInspector: '',                // ชื่อผู้ลงนามท้ายรายงาน — จำไว้ให้ไม่ต้องพิมพ์ซ้ำทุกครั้ง
+      signSafety: '',
+      signManager: ''
     },
     meta: { lastSyncAt:null, lastSyncStatus:'', lastSyncNote:'', createdAt:new Date().toISOString() }
   };
@@ -2933,12 +2940,27 @@ function repHead(title, sub){
     <div class="rep-meta">${esc(sub)}<br>พิมพ์เมื่อ ${thaiDate(todayISO())}</div>`;
 }
 
+/* ช่องลงนามท้ายรายงาน — พิมพ์ชื่อได้ ชื่อที่พิมพ์จะจำไว้ในตั้งค่าและติดไปกับรายงานที่พิมพ์/PDF */
+const SIGN_SLOTS = [
+  { key:'signInspector', role:'ผู้ตรวจสอบ' },
+  { key:'signSafety',    role:'เจ้าหน้าที่ความปลอดภัยฯ (จป.)' },
+  { key:'signManager',   role:'ผู้บังคับบัญชา / ผู้จัดการ' }
+];
+const SIGN_BLANK = '............................';
+
 function repSigns(){
   return `
     <div class="signs">
-      <div class="sign"><div class="line">ผู้ตรวจสอบ</div>วันที่ ......../......../........</div>
-      <div class="sign"><div class="line">เจ้าหน้าที่ความปลอดภัยฯ (จป.)</div>วันที่ ......../......../........</div>
-      <div class="sign"><div class="line">ผู้บังคับบัญชา / ผู้จัดการ</div>วันที่ ......../......../........</div>
+      ${SIGN_SLOTS.map(s => {
+        const nm = String(DATA.settings[s.key] == null ? '' : DATA.settings[s.key]).trim();
+        return `
+      <div class="sign">
+        <div class="line">( <span class="sign-name" data-name="${s.key}">${nm ? esc(nm) : SIGN_BLANK}</span> )</div>
+        <div class="sign-role">${esc(s.role)}</div>
+        วันที่ ......../......../........
+        <input class="sign-in noprint" type="text" placeholder="พิมพ์ชื่อ${esc(s.role)}" value="${esc(nm)}" data-act="signName" data-key="${s.key}">
+      </div>`;
+      }).join('')}
     </div>`;
 }
 
@@ -2980,7 +3002,8 @@ function viewReport(){
         </div>
       </div>
       <div class="row" style="margin-top:12px">
-        <button class="btn primary" data-act="printReport">🖨 พิมพ์ / บันทึกเป็น PDF</button>
+        <button class="btn primary" data-act="pdfReport">⬇ ดาวน์โหลด PDF</button>
+        <button class="btn" data-act="printReport">🖨 พิมพ์ / บันทึกเป็น PDF</button>
         <span class="right"></span>
         <button class="btn sm" data-act="csv" data-kind="register">⬇ CSV ทะเบียนถัง</button>
         <button class="btn sm" data-act="csv" data-kind="inspect">⬇ CSV การตรวจ</button>
@@ -3103,13 +3126,15 @@ function viewReport(){
         <span>ผ่าน <b>${sum.pass}</b></span>
         <span>ไม่ผ่าน <b>${sum.fail}</b></span>
       </div>
+      ${repEditBar(list)}
       <div class="tw"><table>
-        <tr><th>ลำดับ</th><th>วันที่ตรวจ</th><th>รหัสถัง</th><th>ตำแหน่งติดตั้ง</th><th>ผู้ตรวจ</th><th>ผล</th><th>ข้อที่ไม่ผ่าน</th></tr>
+        <tr><th class="noprint" style="width:34px">☑</th><th>ลำดับ</th><th>วันที่ตรวจ</th><th>รหัสถัง</th><th>ตำแหน่งติดตั้ง</th><th>ผู้ตรวจ</th><th>ผล</th><th>ข้อที่ไม่ผ่าน</th><th class="noprint">จัดการ</th></tr>
         ${list.map((ins,i) => {
           const fe = feById.get(ins.feId);
           const sm = summarize(ins.items);
           const failList = CHECKLIST.filter(c => (ins.items||{})[c.key] === 'fail').map(c => c.label).join(' · ');
           return `<tr>
+            <td class="noprint"><input type="checkbox" data-act="repPick" data-id="${esc(ins.id)}" ${UI.repPick.includes(ins.id) ? 'checked' : ''}></td>
             <td>${i+1}</td>
             <td>${thaiDate(ins.date)}</td>
             <td>${esc(fe ? fe.code : '(ถูกลบแล้ว)')}</td>
@@ -3117,6 +3142,10 @@ function viewReport(){
             <td>${esc(ins.inspector)}</td>
             <td>${sm.overall === 'fail' ? 'ไม่ผ่าน' : 'ผ่าน'}</td>
             <td>${esc(failList || '—')}</td>
+            <td class="noprint" style="white-space:nowrap">
+              <button class="btn sm" data-act="editInspection" data-id="${esc(ins.id)}" title="แก้ไขผลตรวจใบนี้ในแบบฟอร์ม">✏️</button>
+              <button class="btn sm danger" data-act="askDeleteInspection" data-id="${esc(ins.id)}" title="ลบผลตรวจใบนี้">🗑</button>
+            </td>
           </tr>`;
         }).join('')}
       </table></div>
@@ -3591,6 +3620,122 @@ function doDeleteInspection(insId){
   save();
   closeModal();
   toast('ลบผลตรวจวันที่ ' + thaiDate(ins.date) + ' แล้ว', 'bad');
+  render();
+}
+
+/* ---------- แก้ไข/ลบผลตรวจหลายรายการจากตารางในหน้ารายงาน ---------- */
+
+/* รายการตรวจที่แสดงอยู่ในตารางรายงานประจำงวดตอนนี้ (คำนวณจากตัวกรองเดียวกับ viewReport) */
+function reportListNow(){
+  const R = UI.report;
+  if (!R || R.kind !== 'inspect') return [];
+  const all = computedList();
+  const scoped = R.building ? all.filter(f => f.building === R.building) : all;
+  return reportInspections(DATA.inspections, R.from, R.to, scoped.map(f => f.id));
+}
+
+/* เฉพาะ id ที่ยังมีจริงและยังอยู่ในตารางที่แสดง — กันเลือกค้างจากงวดก่อน */
+function repPickedIds(){
+  const shown = reportListNow().map(i => i.id);
+  return UI.repPick.filter(id => shown.includes(id));
+}
+
+function repEditBar(list){
+  if (!list.length) return '';
+  const picked = repPickedIds();
+  const allOn = picked.length === list.length;
+  return `
+    <div class="row noprint" style="margin:2px 0 10px">
+      <button class="btn sm" data-act="repPickAll">${allOn ? '☐ ยกเลิกที่เลือก' : '☑ เลือกทั้งหมด'}</button>
+      <span class="hint">เลือกไว้ ${picked.length} จาก ${list.length} รายการ</span>
+      <span class="right"></span>
+      <button class="btn sm" data-act="repBulkEdit" ${picked.length ? '' : 'disabled'}>✏️ แก้ไขที่เลือก</button>
+      <button class="btn sm danger" data-act="repBulkDelete" ${picked.length ? '' : 'disabled'}>🗑 ลบที่เลือก</button>
+    </div>`;
+}
+
+function repPickAll(){
+  const shown = reportListNow().map(i => i.id);
+  UI.repPick = (repPickedIds().length === shown.length) ? [] : shown;
+  render();
+}
+
+function askBulkEditInspections(){
+  const ids = repPickedIds();
+  if (!ids.length){ toast('ยังไม่ได้เลือกรายการ', 'bad'); return; }
+  if (ids.length === 1){ editInspection(ids[0]); return; }   // เลือกใบเดียว = เข้าแบบฟอร์มตรวจเต็มใบเลย
+  const names = DATA.inspectors.filter(Boolean);
+  openModal(`
+    <h3>แก้ไข ${ids.length} รายการพร้อมกัน</h3>
+    <p class="hint">เว้นช่องไหนว่าง = ไม่แก้ช่องนั้น · ตรงนี้แก้ได้เฉพาะวันที่ตรวจกับชื่อผู้ตรวจ
+       ถ้าต้องแก้ผลเช็คลิสต์/รูป/หมายเหตุ ให้กด ✏️ ทีละรายการเพื่อเข้าแบบฟอร์มตรวจ</p>
+    <label class="f">วันที่ตรวจใหม่</label>
+    <input type="date" id="bulkDate" value="" max="${esc(todayISO())}">
+    <label class="f">ชื่อผู้ตรวจใหม่</label>
+    <input type="text" id="bulkInspector" list="bulkInspectorList" placeholder="เว้นว่าง = ไม่เปลี่ยน">
+    <datalist id="bulkInspectorList">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="foot">
+      <button class="btn" data-act="closeModal">ยกเลิก</button>
+      <button class="btn primary" data-act="doBulkEditInspections">บันทึกทั้ง ${ids.length} รายการ</button>
+    </div>`);
+}
+
+function doBulkEditInspections(){
+  const ids = repPickedIds();
+  if (!ids.length){ toast('ไม่มีรายการที่จะแก้', 'bad'); return; }
+  const dEl = document.getElementById('bulkDate');
+  const iEl = document.getElementById('bulkInspector');
+  const newDate = dEl ? dEl.value : '';
+  const newInspector = iEl ? String(iEl.value || '').trim() : '';
+  if (!newDate && !newInspector){ toast('ยังไม่ได้กรอกวันที่หรือชื่อผู้ตรวจ', 'bad', 3600); return; }
+  if (newDate && !isValidISO(newDate)){ toast('วันที่ตรวจไม่ถูกต้อง', 'bad'); return; }
+
+  let n = 0;
+  for (const id of ids){
+    const ins = DATA.inspections.find(x => x.id === id);
+    if (!ins) continue;
+    if (newDate) ins.date = newDate;
+    if (newInspector) ins.inspector = newInspector;
+    ins.updatedAt = new Date().toISOString();
+    n++;
+  }
+  if (newInspector && !DATA.inspectors.includes(newInspector)) DATA.inspectors.push(newInspector);
+  if (!save()) return;
+  closeModal();
+  toast('แก้ไขแล้ว ' + n + ' รายการ', 'good', 3600);
+  render();
+}
+
+function askBulkDeleteInspections(){
+  const ids = repPickedIds();
+  if (!ids.length){ toast('ยังไม่ได้เลือกรายการ', 'bad'); return; }
+  const rows = ids.map(id => DATA.inspections.find(x => x.id === id)).filter(Boolean);
+  const feById = new Map(DATA.extinguishers.map(f => [f.id, f]));
+  openModal(`
+    <h3 style="color:#fca5a5">ลบผลตรวจ ${rows.length} รายการ ?</h3>
+    <div class="tw"><table>
+      <tr><th>วันที่ตรวจ</th><th>รหัสถัง</th><th>ผู้ตรวจ</th></tr>
+      ${rows.map(r => `<tr><td>${thaiDate(r.date)}</td>
+        <td>${esc((feById.get(r.feId) || {}).code || '(ถูกลบแล้ว)')}</td>
+        <td>${esc(r.inspector)}</td></tr>`).join('')}
+    </table></div>
+    <p style="color:#fca5a5"><b>ย้อนกลับไม่ได้</b> — กำหนดตรวจครั้งถัดไปของถังที่เกี่ยวข้องจะถูกคำนวณใหม่จากใบที่เหลือ</p>
+    <p class="hint">งานแก้ไข (CAR) ที่เคยเปิดจากผลตรวจเหล่านี้ <b>จะไม่ถูกลบตาม</b> — ถ้าไม่ต้องการ ให้ไปปิดหรือลบที่แท็บงานแก้ไขเอง</p>
+    <div class="foot">
+      <button class="btn" data-act="closeModal">ยกเลิก</button>
+      <button class="btn danger" data-act="doBulkDeleteInspections">ยืนยันลบถาวร ${rows.length} รายการ</button>
+    </div>`);
+}
+
+function doBulkDeleteInspections(){
+  const ids = repPickedIds();
+  if (!ids.length){ toast('ไม่มีรายการที่จะลบ', 'bad'); return; }
+  for (const id of ids) recordDeletion(DATA, 'inspections', id);   // จดสุสานก่อน กันซิงก์ดึงกลับ
+  DATA.inspections = DATA.inspections.filter(x => !ids.includes(x.id));
+  UI.repPick = [];
+  save();
+  closeModal();
+  toast('ลบผลตรวจแล้ว ' + ids.length + ' รายการ', 'bad', 3600);
   render();
 }
 
@@ -4225,6 +4370,149 @@ function downloadFile(filename, content, mime){
   }
 }
 
+/* ---------- ส่งออกรายงานเป็นไฟล์ PDF ปุ่มเดียว (ไม่พึ่ง CDN — ทำงานตอนออฟไลน์ได้) ----------
+   วิธีทำ: เรนเดอร์ <div class="report"> ใน iframe ที่ใช้ CSS ชุดเดียวกับตอนพิมพ์ (แปลง @media print → @media all)
+   → วาดเป็นภาพผ่าน SVG foreignObject → ตัดเป็นหน้า A4 ตามจุดตัดที่ปลอดภัย (ไม่ตัดกลางแถว) → ประกอบเป็นไฟล์ PDF เอง
+   ข้อดี: ได้ชื่อผู้ลงนามที่พิมพ์ไว้ติดไปด้วย และหน้าตาตรงกับที่พิมพ์ออกกระดาษ */
+const PDF_PAGE_W = 595.28, PDF_PAGE_H = 841.89;      // A4 หน่วย point
+const PDF_PX_W = 794, PDF_PX_PAD = 28;               // A4 กว้าง 794px ที่ 96dpi
+
+function pdfDataUrlToBytes(dataUrl){
+  const bin = atob(String(dataUrl).split(',')[1] || '');
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/* ประกอบไฟล์ PDF จากภาพ JPEG หน้าละ 1 ภาพ (เต็มหน้า A4) */
+function buildPDFfromJPEGs(pages){
+  const enc = new TextEncoder();
+  const chunks = [];
+  let len = 0;
+  const push = d => { const b = (typeof d === 'string') ? enc.encode(d) : d; chunks.push(b); len += b.length; };
+  const offsets = [];
+  const n = pages.length;
+  const pageId = i => 3 + i * 3, contentId = i => 4 + i * 3, imgId = i => 5 + i * 3;
+
+  push('%PDF-1.4\n');
+  offsets[1] = len; push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  offsets[2] = len; push('2 0 obj\n<< /Type /Pages /Kids [' +
+    pages.map((p, i) => pageId(i) + ' 0 R').join(' ') + '] /Count ' + n + ' >>\nendobj\n');
+
+  for (let i = 0; i < n; i++){
+    const content = 'q ' + PDF_PAGE_W + ' 0 0 ' + PDF_PAGE_H + ' 0 0 cm /Im0 Do Q\n';
+    offsets[pageId(i)] = len;
+    push(pageId(i) + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + PDF_PAGE_W + ' ' + PDF_PAGE_H +
+         '] /Resources << /XObject << /Im0 ' + imgId(i) + ' 0 R >> >> /Contents ' + contentId(i) + ' 0 R >>\nendobj\n');
+    offsets[contentId(i)] = len;
+    push(contentId(i) + ' 0 obj\n<< /Length ' + content.length + ' >>\nstream\n' + content + 'endstream\nendobj\n');
+    offsets[imgId(i)] = len;
+    push(imgId(i) + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + pages[i].w + ' /Height ' + pages[i].h +
+         ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + pages[i].bytes.length + ' >>\nstream\n');
+    push(pages[i].bytes);
+    push('\nendstream\nendobj\n');
+  }
+
+  const total = 2 + n * 3;
+  const xrefPos = len;
+  let xref = 'xref\n0 ' + (total + 1) + '\n0000000000 65535 f \n';
+  for (let id = 1; id <= total; id++) xref += String(offsets[id] || 0).padStart(10, '0') + ' 00000 n \n';
+  push(xref);
+  push('trailer\n<< /Size ' + (total + 1) + ' /Root 1 0 R >>\nstartxref\n' + xrefPos + '\n%%EOF\n');
+
+  const out = new Uint8Array(len);
+  let p = 0;
+  for (const c of chunks){ out.set(c, p); p += c.length; }
+  return out;
+}
+
+/* จุดตัดหน้าที่ปลอดภัย = ขอบล่างของแถว/ย่อหน้า/หัวข้อ (หน่วย px นับจากขอบบนของ body ใน iframe) */
+function pdfSafeBreaks(doc){
+  const ys = [];
+  doc.querySelectorAll('tr, h3, p, .rep-sum, .tw, .signs').forEach(el => {
+    const y = el.offsetTop + el.offsetHeight;
+    if (Number.isFinite(y) && y > 0) ys.push(Math.ceil(y) + PDF_PX_PAD);
+  });
+  return [...new Set(ys)].sort((a, b) => a - b);
+}
+
+function reportFileBase(){
+  const R = UI.report || {};
+  const kind = (REPORT_KINDS.find(k => k.id === R.kind) || REPORT_KINDS[0]).name;
+  const range = (R.from && R.to) ? '_' + R.from + '_ถึง_' + R.to : '';
+  return (kind + range).replace(/[\\/:*?"<>|]/g, '-');
+}
+
+async function exportReportPDF(){
+  const rep = document.querySelector('.report');
+  if (!rep){ toast('ไม่พบเนื้อรายงานในหน้านี้', 'bad'); return; }
+  toast('กำลังสร้างไฟล์ PDF ...', 'good', 2500);
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText = 'position:fixed; left:-10000px; top:0; width:' + PDF_PX_W + 'px; height:400px; border:0; opacity:0';
+  document.body.appendChild(iframe);
+  try{
+    const css = [...document.querySelectorAll('style')].map(s => s.textContent).join('\n')
+                  .replace(/@media\s+print/g, '@media all');       // ใช้หน้าตาชุดเดียวกับตอนพิมพ์กระดาษ
+    const doc = iframe.contentDocument;
+    doc.open();
+    doc.write('<!doctype html><html><head><meta charset="utf-8"><style>' + css +
+              '</style><style>html,body{margin:0;padding:0;background:#fff !important}' +
+              'body{padding:' + PDF_PX_PAD + 'px; width:' + (PDF_PX_W - PDF_PX_PAD * 2) + 'px}</style></head><body>' +
+              rep.outerHTML + '</body></html>');
+    doc.close();
+    await new Promise(r => setTimeout(r, 120));                    // รอ layout เสร็จ
+
+    const H = Math.max(1, Math.ceil(doc.body.scrollHeight) + PDF_PX_PAD);
+    doc.documentElement.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    const xhtml = new XMLSerializer().serializeToString(doc.documentElement);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + PDF_PX_W + '" height="' + H + '">' +
+                '<foreignObject x="0" y="0" width="' + PDF_PX_W + '" height="' + H + '">' + xhtml +
+                '</foreignObject></svg>';
+    const img = new Image();
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    await img.decode();
+
+    const scale = 2;                                               // 2 เท่า = ตัวหนังสือคมพอสำหรับสั่งพิมพ์
+    const full = document.createElement('canvas');
+    full.width = PDF_PX_W * scale; full.height = H * scale;
+    const fx = full.getContext('2d');
+    fx.fillStyle = '#fff'; fx.fillRect(0, 0, full.width, full.height);
+    fx.drawImage(img, 0, 0, full.width, full.height);
+
+    const pageH = Math.round(PDF_PX_W * (PDF_PAGE_H / PDF_PAGE_W));   // ความสูง 1 หน้า A4 หน่วย px
+    const breaks = pdfSafeBreaks(doc);
+    const pages = [];
+    let cur = 0, guard = 0;
+    while (cur < H && guard++ < 200){
+      let end = Math.min(cur + pageH, H);
+      if (end < H){
+        const fit = breaks.filter(y => y > cur + 40 && y <= end);
+        if (fit.length) end = fit[fit.length - 1];                 // ตัดที่ขอบล่างของแถวสุดท้ายที่ยังอยู่ในหน้า
+      }
+      const cv = document.createElement('canvas');
+      cv.width = PDF_PX_W * scale; cv.height = pageH * scale;
+      const cx = cv.getContext('2d');
+      cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+      cx.drawImage(full, 0, cur * scale, cv.width, (end - cur) * scale,
+                         0, 0, cv.width, (end - cur) * scale);
+      pages.push({ bytes: pdfDataUrlToBytes(cv.toDataURL('image/jpeg', 0.92)), w: cv.width, h: cv.height });
+      cur = end;
+    }
+    if (!pages.length) throw new Error('ไม่มีเนื้อหาให้ส่งออก');
+
+    const pdf = buildPDFfromJPEGs(pages);
+    downloadFile(reportFileBase() + '.pdf', pdf, 'application/pdf');
+    toast('ดาวน์โหลด PDF แล้ว ' + pages.length + ' หน้า', 'good', 4000);
+  }catch(e){
+    UI.lastError = 'สร้าง PDF ไม่สำเร็จ: ' + e.message;
+    console.error('[FireGuard] export PDF failed', e);
+    toast('สร้าง PDF ไม่สำเร็จ: ' + e.message + ' — ใช้ปุ่ม 🖨 พิมพ์ แล้วเลือกปลายทางเป็น PDF แทนได้', 'bad', 7000);
+  }finally{
+    try{ iframe.remove(); }catch(e){}
+  }
+}
+
 /* ข้อมูลที่อยู่ในขอบเขตของรายงานปัจจุบัน (ช่วงวันที่ + พื้นที่) */
 function reportScope(){
   const R = UI.report || Object.assign({ kind:'inspect', building:'', feId:'' }, defaultReportRange(todayISO()));
@@ -4729,6 +5017,11 @@ document.addEventListener('click', e => {
     case 'editInspection':      editInspection(t.dataset.id); break;
     case 'askDeleteInspection': askDeleteInspection(t.dataset.id); break;
     case 'doDeleteInspection':  doDeleteInspection(t.dataset.id); break;
+    case 'repPickAll':               repPickAll(); break;
+    case 'repBulkEdit':              askBulkEditInspections(); break;
+    case 'doBulkEditInspections':    doBulkEditInspections(); break;
+    case 'repBulkDelete':            askBulkDeleteInspections(); break;
+    case 'doBulkDeleteInspections':  doBulkDeleteInspections(); break;
     case 'cancelInspect':
       UI.inspectDraft = null;
       UI.view = UI.round ? 'round' : 'detail';
@@ -4839,6 +5132,7 @@ document.addEventListener('click', e => {
       break;
     }
     case 'doDeleteIssue':
+      recordDeletion(DATA, 'issues', t.dataset.id);          // จดสุสานก่อน ไม่งั้นซิงก์รอบหน้าดึงกลับมา
       DATA.issues = DATA.issues.filter(x => x.id !== t.dataset.id);
       save(); closeModal(); render(); toast('ลบงานแก้ไขแล้ว', 'bad'); break;
 
@@ -4873,6 +5167,7 @@ document.addEventListener('click', e => {
       break;
     }
     case 'doDeleteService':
+      recordDeletion(DATA, 'services', t.dataset.id);        // จดสุสานก่อน ไม่งั้นซิงก์รอบหน้าดึงกลับมา
       DATA.services = DATA.services.filter(x => x.id !== t.dataset.id);
       save(); closeModal(); render(); toast('ลบบันทึกบริการแล้ว', 'bad'); break;
 
@@ -4898,6 +5193,7 @@ document.addEventListener('click', e => {
       break;
     }
     case 'doDeleteUsage':
+      recordDeletion(DATA, 'usageEvents', t.dataset.id);     // จดสุสานก่อน ไม่งั้นซิงก์รอบหน้าดึงกลับมา
       DATA.usageEvents = DATA.usageEvents.filter(x => x.id !== t.dataset.id);
       save(); closeModal(); render(); toast('ลบบันทึกการใช้งานแล้ว', 'bad'); break;
 
@@ -4909,6 +5205,7 @@ document.addEventListener('click', e => {
 
     /* ----- เฟส 5: รายงาน / CSV / สำรองข้อมูล ----- */
     case 'printReport': window.print(); break;
+    case 'pdfReport': exportReportPDF(); break;
     case 'csv':         exportCSV(t.dataset.kind); break;
     case 'csvTemplate': csvTemplate(); break;
     case 'backup':      backupData(); break;
@@ -4974,6 +5271,15 @@ document.addEventListener('input', e => {
     renderDebug();
     return;
   }
+  if (act === 'signName'){                                 // ชื่อผู้ลงนามท้ายรายงาน — อัปเดตสดโดยไม่ re-render (กัน focus หลุด)
+    const key = t.dataset.key;
+    DATA.settings[key] = t.value;
+    save();
+    const box = document.querySelector('.sign-name[data-name="' + key + '"]');
+    if (box) box.textContent = t.value.trim() || SIGN_BLANK;
+    renderDebug();
+    return;
+  }
   if (act === 'set'){
     DATA.settings[t.dataset.key] = (t.dataset.key === 'siteName') ? t.value : t.value;
     save();
@@ -4995,6 +5301,12 @@ document.addEventListener('change', e => {
     return;
   }
   if (act === 'qrSize'){ UI.qrSize = t.value; render(); return; }
+  if (act === 'repPick'){                                   // ติ๊กเลือกผลตรวจในตารางรายงาน
+    const id = t.dataset.id;
+    UI.repPick = t.checked ? [...new Set([...UI.repPick, id])] : UI.repPick.filter(x => x !== id);
+    render();
+    return;
+  }
   if (act === 'setBool'){
     DATA.settings[t.dataset.key] = !!t.checked;
     save();
@@ -5878,6 +6190,22 @@ test('mergeDeleted รวมสองฝั่งแบบไม่ทิ้ง�
   assertEq(got.length, 2);
 });
 
+test('mergeAll งานแก้ไข/บริการ/ใช้งานจริง ที่ลบแล้ว ไม่ถูกดึงกลับมา', () => {
+  const local = { ...emptyColls(), deleted:[
+    { id:'c1', coll:'issues',      at:'t' },
+    { id:'s1', coll:'services',    at:'t' },
+    { id:'u1', coll:'usageEvents', at:'t' } ] };
+  const remote = { issues:[{ id:'c1' },{ id:'c2' }], services:[{ id:'s1' }], usageEvents:[{ id:'u1' }] };
+  const m = mergeAll(local, remote);
+  assertEq([m.data.issues.map(x=>x.id), m.data.services.length, m.data.usageEvents.length], [['c2'], 0, 0]);
+});
+test('recordDeletion ครบทั้ง 3 กลุ่มที่มีปุ่มลบรายรายการ', () => {
+  const d = emptyColls();
+  recordDeletion(d, 'issues', 'c1');
+  recordDeletion(d, 'services', 's1');
+  recordDeletion(d, 'usageEvents', 'u1');
+  assertEq(d.deleted.map(t => t.coll).sort(), ['issues','services','usageEvents']);
+});
 test('mergeAll ถังที่ลบแล้ว ไม่ถูกดึงกลับมาจากคลาวด์', () => {
   const local  = { ...emptyColls(), deleted:[{ id:'f1', coll:'extinguishers', at:'2026-08-27T00:00:00.000Z' }] };
   const remote = { extinguishers:[{ id:'f1', code:'FE-001' }, { id:'f2', code:'FE-002' }] };
