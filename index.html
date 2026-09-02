@@ -1420,6 +1420,18 @@ function reportInspections(inspections, from, to, feIds){
     .sort((a,b) => a.date.localeCompare(b.date) || String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
 }
 
+/* เรียงแถวในรายงานประจำงวด: วันที่ตรวจก่อน วันเดียวกันค่อยเรียงตามเลขท้ายรหัสถัง
+   ลำดับเลขท้ายยืมจาก sortForList ตัวเดิม (กฎการเรียงถังมีที่เดียวทั้งระบบ) — ถังที่ถูกลบไปแล้วไปอยู่ท้ายวันนั้น
+   วันเดียวกัน + ถังเดียวกัน (ตรวจซ้ำ) ค่อยเรียงตามเวลาที่บันทึกเหมือนเดิม */
+function sortReportByDateThenCode(inspections, feList){
+  const order = new Map(sortForList(feList || []).map((fe,i) => [fe.id, i]));
+  const rank = id => order.has(id) ? order.get(id) : Number.MAX_SAFE_INTEGER;
+  return [...(inspections || [])].sort((a,b) =>
+    String(a.date||'').localeCompare(String(b.date||''))
+    || (rank(a.feId) - rank(b.feId))
+    || String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
+}
+
 /* สรุปหัวรายงาน: ตรวจกี่ครั้ง กี่ถัง ผ่าน/ไม่ผ่านเท่าไร */
 function reportSummary(inspections){
   const fes = new Set();
@@ -3153,7 +3165,7 @@ function viewReport(){
   }
 
   /* รายงานการตรวจสอบประจำงวด (ค่าเริ่มต้น) */
-  const list = reportInspections(DATA.inspections, R.from, R.to, scopedIds);
+  const list = sortReportByDateThenCode(reportInspections(DATA.inspections, R.from, R.to, scopedIds), all);
   const sum = reportSummary(list);
   const notInspected = scoped.filter(fe => !list.some(i => i.feId === fe.id));
   return controls + `
@@ -6140,6 +6152,45 @@ test('reportInspections กรองช่วงวันและถังท�
 });
 test('reportInspections ไม่ระบุถัง = ทุกใบ', () =>
   assertEq(reportInspections([{ id:'1', feId:'z', date:'2026-08-20' }], '2026-08-01', '2026-08-31', null).length, 1));
+
+const FE_SORT_REP = [
+  { id:'f1', code:'FE-DC-003' }, { id:'f2', code:'FE-BF-001' }, { id:'f3', code:'FE-PD-002' }
+];
+test('sortReportByDateThenCode วันเดียวกันเรียงตามเลขท้ายรหัสถัง', () => {
+  const ins = [
+    { id:'i1', feId:'f1', date:'2026-08-26' }, { id:'i2', feId:'f3', date:'2026-08-26' },
+    { id:'i3', feId:'f2', date:'2026-08-26' }
+  ];
+  assertEq(sortReportByDateThenCode(ins, FE_SORT_REP).map(x => x.id), ['i3','i2','i1']);
+});
+test('sortReportByDateThenCode วันที่มาก่อนเลขท้ายเสมอ', () => {
+  const ins = [
+    { id:'i1', feId:'f2', date:'2026-08-27' }, { id:'i2', feId:'f1', date:'2026-08-26' }
+  ];
+  assertEq(sortReportByDateThenCode(ins, FE_SORT_REP).map(x => x.id), ['i2','i1']);
+});
+test('sortReportByDateThenCode ถังที่ถูกลบแล้วไปอยู่ท้ายวันนั้น', () => {
+  const ins = [
+    { id:'i1', feId:'ไม่มีแล้ว', date:'2026-08-26' }, { id:'i2', feId:'f1', date:'2026-08-26' }
+  ];
+  assertEq(sortReportByDateThenCode(ins, FE_SORT_REP).map(x => x.id), ['i2','i1']);
+});
+test('sortReportByDateThenCode ถังเดียวกันวันเดียวกัน เรียงตามเวลาที่บันทึก', () => {
+  const ins = [
+    { id:'i1', feId:'f1', date:'2026-08-26', createdAt:'2026-08-26T09:00:00Z' },
+    { id:'i2', feId:'f1', date:'2026-08-26', createdAt:'2026-08-26T08:00:00Z' }
+  ];
+  assertEq(sortReportByDateThenCode(ins, FE_SORT_REP).map(x => x.id), ['i2','i1']);
+});
+test('sortReportByDateThenCode ค่าว่าง/ลิสต์ถังว่าง ไม่ล่ม', () => {
+  assertEq(sortReportByDateThenCode(null, null).length, 0);
+  assertEq(sortReportByDateThenCode([{ id:'i1', feId:'f1' }, { id:'i2', feId:'f2' }], []).length, 2);
+});
+test('sortReportByDateThenCode ไม่แก้ไขอาร์เรย์ต้นฉบับ', () => {
+  const ins = [{ id:'i1', feId:'f1', date:'2026-08-26' }, { id:'i2', feId:'f2', date:'2026-08-26' }];
+  sortReportByDateThenCode(ins, FE_SORT_REP);
+  assertEq(ins.map(x => x.id), ['i1','i2']);
+});
 test('reportSummary นับครั้ง ถัง ผ่าน/ไม่ผ่าน', () => {
   const ins = [
     { feId:'a', items:{ x:'pass' } }, { feId:'a', items:{ x:'fail' } }, { feId:'b', items:{ x:'pass' } }
