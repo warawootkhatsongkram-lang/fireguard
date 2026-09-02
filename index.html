@@ -338,6 +338,16 @@ tr:last-child td{border-bottom:none}
 
 /* ---------- เฟส 5: รายงาน A4 ---------- */
 .report{background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:18px; margin:12px 0}
+/* หัวรายงาน: โลโก้ชิดซ้าย + ตัวถ่วงกว้างเท่ากันฝั่งขวา เพื่อให้ชื่อบริษัท/ชื่อรายงานยังอยู่กึ่งกลางหน้ากระดาษจริง */
+.rep-head{display:flex; align-items:flex-start; gap:12px}
+.rep-head .rep-head-txt{flex:1 1 auto; min-width:0}
+.rep-logo{flex:0 0 auto; width:116px; height:auto; box-sizing:border-box; background:#fff; border-radius:6px; padding:4px 6px}
+.rep-spacer{flex:0 0 116px}
+@media (max-width:560px){                 /* จอแคบ: วางโลโก้ไว้กลางเหนือหัวเรื่อง แทนการบีบข้อความ */
+  .rep-head{flex-direction:column; align-items:center; gap:8px}
+  .rep-head .rep-head-txt{width:100%}
+  .rep-spacer{display:none}
+}
 .rep-title{text-align:center; margin:0 0 4px; font-size:21px; font-weight:700}
 .rep-site{text-align:center; font-size:15px; color:var(--gold2); margin-bottom:2px}
 .rep-meta{text-align:center; font-size:13.5px; color:var(--muted); margin-bottom:14px}
@@ -362,6 +372,8 @@ tr:last-child td{border-bottom:none}
   .report table{min-width:0; font-size:12px; color:#000}
   .report th{background:#e9e9e9 !important; color:#000 !important; border:1px solid #888}
   .report td{border:1px solid #888; color:#000}
+  /* สไตล์จอ tr:last-child td{border-bottom:none} แรงกว่า .report td จึงลบเส้นปิดท้ายตารางตอนพิมพ์ — ทวงคืนตรงนี้ */
+  .report tr:last-child td{border-bottom:1px solid #888}
   .report tr{page-break-inside:avoid}
   .report .pill{border-color:#888 !important; color:#000 !important; background:none !important}
   .sign .line{border-top:1px solid #000}
@@ -2945,11 +2957,26 @@ const REPORT_KINDS = [
   { id:'fe',       name:'ประวัติรายถัง (ทีละใบ)' }
 ];
 
+/* โลโก้บริษัทสำหรับหัวรายงาน — ใช้รูปเดียวกับที่ฝังไว้ที่ header ของหน้า (data URI) จะได้ไม่ต้องฝังซ้ำอีกก้อน
+   ต้องเป็น data URI เท่านั้น เพราะปุ่มส่งออก PDF วาดรายงานผ่าน SVG foreignObject ซึ่งโหลดไฟล์ภายนอกไม่ได้ */
+function repLogoSrc(){
+  const img = document.querySelector('header.top .logo img');
+  const src = img ? String(img.getAttribute('src') || '') : '';
+  return src.startsWith('data:') ? src : '';
+}
+
 function repHead(title, sub){
+  const logo = repLogoSrc();
   return `
-    <div class="rep-site">${esc(DATA.settings.siteName)}</div>
-    <h1 class="rep-title">${esc(title)}</h1>
-    <div class="rep-meta">${esc(sub)}<br>พิมพ์เมื่อ ${thaiDate(todayISO())}</div>`;
+    <div class="rep-head">
+      ${logo ? `<img class="rep-logo" src="${esc(logo)}" alt="โลโก้ HAMER และเครื่องหมายความปลอดภัย">` : ''}
+      <div class="rep-head-txt">
+        <div class="rep-site">${esc(DATA.settings.siteName)}</div>
+        <h1 class="rep-title">${esc(title)}</h1>
+        <div class="rep-meta">${esc(sub)}<br>พิมพ์เมื่อ ${thaiDate(todayISO())}</div>
+      </div>
+      ${logo ? '<div class="rep-spacer" aria-hidden="true"></div>' : ''}
+    </div>`;
 }
 
 /* ช่องลงนามท้ายรายงาน — พิมพ์ชื่อได้ ชื่อที่พิมพ์จะจำไว้ในตั้งค่าและติดไปกับรายงานที่พิมพ์/PDF */
