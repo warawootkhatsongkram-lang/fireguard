@@ -319,6 +319,19 @@ tr:last-child td{border-bottom:none}
 .progbar{height:9px; border-radius:999px; background:rgba(255,255,255,.1); overflow:hidden; margin:8px 0}
 .progbar i{display:block; height:100%; background:linear-gradient(90deg,var(--gold),var(--gold2)); transition:width .25s}
 
+/* ---------- เฟส 7: ผังจุดติดตั้ง ---------- */
+.plan-scroll{overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:var(--r2); background:#000; max-height:70vh; margin:10px 0}
+.plan-canvas{position:relative; display:inline-block; min-width:100%}
+.plan-canvas img{width:100%; height:auto; display:block; user-select:none; -webkit-user-drag:none}
+/* หมุด: จุดกลม 26px วางด้วยสัดส่วน 0-1 ของภาพ (ย่อ/ขยายรูปแล้วยังตรงจุดเดิม) */
+.plan-canvas .pin{
+  position:absolute; width:26px; height:26px; margin:-13px 0 0 -13px; padding:0; min-height:0;
+  border-radius:50%; border:2px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.65); cursor:pointer;
+}
+.pin.ok{background:var(--green)} .pin.soon{background:var(--amber)} .pin.over{background:var(--red)}
+.pin.off{background:var(--muted)} .pin.none{background:var(--cyan)}
+.plan-thumb{width:140px; height:140px}
+
 /* ---------- พิมพ์แท็ก A4 ---------- */
 @media print{
   @page{ size:A4; margin:8mm }
@@ -522,7 +535,7 @@ const WIPE_PHRASE   = 'ลบข้อมูลทั้งหมด';       // 
    ============================================================ */
 let DATA = null;                       // ข้อมูลจริงที่บันทึกลง localStorage
 let UI = {                             // สถานะหน้าจอ ไม่บันทึก
-  view:'list',                         // list | dash | detail | inspect | settings | qrsheet | round
+  view:'list',                         // list | dash | detail | inspect | settings | qrsheet | round | issues | report | plan
   feId:null,
   q:'', fBuilding:'', fAgent:'', fStatus:'', fDue:'',
   inspectDraft:null,
@@ -537,7 +550,8 @@ let UI = {                             // สถานะหน้าจอ ไ�
   importPreview:null,                  // ผลอ่านไฟล์ CSV ที่รอยืนยันนำเข้า
   restoreCandidate:null,               // ข้อมูลจากไฟล์สำรองที่รอยืนยันกู้คืน
   scanning:false,
-  lastError:null
+  lastError:null,
+  plan:{ id:'', pinFE:'', zoom:100 }   // เฟส 7: ผังที่กำลังดู / ถังที่เลือกจะปัก / ระดับซูม %
 };
 
 function defaultData(){
@@ -2110,6 +2124,7 @@ function render(){
   else if (UI.view === 'round')    host.innerHTML = viewRound();
   else if (UI.view === 'issues')   host.innerHTML = viewIssues();
   else if (UI.view === 'report')   host.innerHTML = viewReport();
+  else if (UI.view === 'plan')     host.innerHTML = viewPlan();
   else                             host.innerHTML = viewList();
   renderDebug();
 }
@@ -2124,6 +2139,7 @@ function renderTabs(){
     { id:'issues',   label:'🔧 งานแก้ไข', badge: isum.active },
     { id:'report',   label:'📄 รายงาน' },
     { id:'qrsheet',  label:'🏷 แท็ก QR' },
+    { id:'plan',     label:'🗺 ผัง' },
     { id:'settings', label:'⚙️ ตั้งค่า' }
   ];
   $('#tabs').innerHTML = tabs.map(t =>
@@ -3290,6 +3306,173 @@ function qrModalHTML(fe){
     </div>`;
 }
 
+/* ---------- เฟส 7: ผังจุดติดตั้ง ---------- */
+const PLAN_ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
+
+function planFEOptions(plan, selectedId){
+  return sortForList(computedList()).map(fe => {
+    const pinned = !!pinOf(plan, fe.id);
+    return `<option value="${esc(fe.id)}" ${fe.id===selectedId?'selected':''}>${esc(fe.code)}${pinned ? ' · ปักแล้ว' : ''}</option>`;
+  }).join('');
+}
+
+function viewPlan(){
+  const plans = DATA.floorplans || [];
+  if (!plans.length){
+    return `
+      <h2 class="sec">ผังจุดติดตั้ง</h2>
+      <div class="empty">
+        <span class="ic">🗺</span>
+        ยังไม่มีผังในระบบ<br><span style="font-size:14px">อัปโหลดรูปผังโรงงานเพื่อเริ่มปักหมุดตำแหน่งถัง</span>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" data-act="newPlan">➕ เพิ่มผัง</button></div>`;
+  }
+  if (!UI.plan.id || !planOf(UI.plan.id, plans)) UI.plan.id = plans[0].id;
+  const plan = planOf(UI.plan.id, plans);
+  const list = computedList();
+  const sum = planSummary(plan, list);
+  const pins = livePins(plan, list);
+  const zoom = UI.plan.zoom || 100;
+  const pinFE = DATA.extinguishers.find(f => f.id === UI.plan.pinFE);
+
+  const chips = plans.length > 1 ? `
+    <div class="chips">
+      ${plans.map(p => `<button class="chip ${p.id===plan.id?'on':''}" data-act="planPick" data-id="${esc(p.id)}">${esc(p.name)}</button>`).join('')}
+    </div>` : '';
+
+  const body = !plan.image ? `<div class="empty"><span class="ic">🖼</span>ผังนี้ยังไม่มีรูป</div>` : `
+    <div class="row" style="margin:8px 0">
+      <span class="pill">📍 ปักแล้ว ${sum.pinned} / ${sum.total} ใบ</span>
+      ${sum.unpinned ? `<span class="pill over">ยังไม่ปัก ${sum.unpinned} ใบ</span>` : ''}
+      <span class="right row" style="gap:6px">
+        <button class="btn sm" data-act="planZoom" data-z="out" ${zoom<=PLAN_ZOOM_LEVELS[0]?'disabled':''}>－</button>
+        <button class="btn sm" data-act="planZoom" data-z="reset">${zoom}%</button>
+        <button class="btn sm" data-act="planZoom" data-z="in" ${zoom>=PLAN_ZOOM_LEVELS[PLAN_ZOOM_LEVELS.length-1]?'disabled':''}>＋</button>
+      </span>
+    </div>
+    <div class="card" style="padding:12px">
+      <label class="f">เลือกถังที่จะปักหมุด</label>
+      <select data-act="planPickFE">
+        <option value="">— เลือกถัง —</option>
+        ${planFEOptions(plan, UI.plan.pinFE)}
+      </select>
+      <p class="hint">${pinFE ? 'แตะตำแหน่งบนภาพด้านล่างเพื่อปักหมุดถัง ' + esc(pinFE.code) + ' (แตะซ้ำที่ถังเดิม = ย้ายหมุด)' : 'เลือกถังก่อน แล้วแตะตำแหน่งบนภาพเพื่อปักหมุด'}</p>
+    </div>
+    <div class="plan-scroll">
+      <div class="plan-canvas" style="width:${zoom}%" data-act="planTap">
+        <img src="${esc(photoFullSrc(plan.image))}" alt="${esc(plan.name)}">
+        ${pins.map(p => `<button class="pin ${esc(pinClass(p.fe))}" style="left:${(p.x*100).toFixed(3)}%;top:${(p.y*100).toFixed(3)}%" data-act="pinInfo" data-id="${esc(p.feId)}" title="${esc(p.fe.code)}"></button>`).join('')}
+      </div>
+    </div>
+    ${sum.unpinned ? `<p class="hint" style="margin-top:8px">ถังที่ยังไม่ได้ปักในผังนี้: ${sortForList(sum.restList).slice(0,20).map(f=>esc(f.code)).join(' · ')}${sum.restList.length>20?' …':''}</p>` : ''}`;
+
+  return `
+    <h2 class="sec">ผังจุดติดตั้ง</h2>
+    ${chips}
+    <div class="row" style="margin:8px 0">
+      <h3 style="margin:0">${esc(plan.name)}</h3>
+      <span class="right"><button class="btn sm danger" data-act="askDeletePlan" data-id="${esc(plan.id)}">🗑 ลบผังนี้</button></span>
+    </div>
+    ${body}
+    <div class="row" style="margin-top:14px"><button class="btn" data-act="newPlan">➕ เพิ่มผังใหม่</button></div>`;
+}
+
+function planFormHTML(d){
+  return `
+    <h3>เพิ่มผังจุดติดตั้งใหม่</h3>
+    <label class="f">ชื่อผัง <b style="color:#fca5a5">*</b></label>
+    <input type="text" data-fd="name" value="${esc(d.name)}" placeholder="เช่น อาคาร 1 ชั้น 2">
+    <label class="f">รูปผัง <b style="color:#fca5a5">*</b></label>
+    ${d.image ? `
+      <div class="thumbs"><div class="thumb plan-thumb">
+        <img src="${esc(photoThumbSrc(d.image))}" alt="ตัวอย่างผัง">
+        <button data-act="delPlanFormImage" title="เอารูปนี้ออก">✕</button>
+      </div></div>` :
+      `<input type="file" accept="image/*" data-act="addPlanFormImage">`}
+    <p class="hint">รองรับรูปถ่าย/สแกนแผนผังโรงงาน ระบบย่อขนาดให้อัตโนมัติ</p>
+    <div id="formErr"></div>
+    <div class="foot">
+      <button class="btn" data-act="closeForm">ยกเลิก</button>
+      <button class="btn primary" data-act="savePlan">💾 บันทึก</button>
+    </div>`;
+}
+
+async function addPlanFormImage(input){
+  const d = UI.formDraft;
+  if (!d || !input.files || !input.files[0]) return;
+  syncFormDOM();
+  try{
+    toast('กำลังย่อรูปผัง…', '', 1200);
+    d.image = await makePlanImage(input.files[0]);
+    renderForm();
+  }catch(e){
+    UI.lastError = 'แนบรูปผังไม่สำเร็จ: ' + e.message;
+    toast('แนบรูปผังไม่สำเร็จ: ' + e.message, 'bad', 4000);
+  }
+}
+
+function savePlan(){
+  syncFormDOM();
+  const d = UI.formDraft;
+  if (!d) return;
+  const errs = [];
+  if (!String(d.name||'').trim()) errs.push('ต้องกรอกชื่อผัง');
+  if (!d.image) errs.push('ต้องแนบรูปผัง');
+  if (errs.length){ formErr(errs); return; }
+  const plan = { id: uid('pl'), name:String(d.name).trim(), image:d.image, pins:[], createdAt:new Date().toISOString() };
+  DATA.floorplans.push(plan);
+  save();
+  closeForm();
+  UI.plan.id = plan.id; UI.plan.pinFE = ''; UI.plan.zoom = 100;
+  toast('เพิ่มผังแล้ว', 'good');
+  render();
+}
+
+function askDeletePlan(id){
+  const pl = planOf(id, DATA.floorplans);
+  if (!pl) return;
+  openModal(`
+    <h3 style="color:#fca5a5">ลบผัง “${esc(pl.name)}” ?</h3>
+    <p>การลบนี้ <b>ย้อนกลับไม่ได้</b> และจะลบตำแหน่งหมุดที่ปักไว้ทั้งหมด ${(pl.pins||[]).length} จุดในผังนี้ไปด้วย</p>
+    <div class="foot">
+      <button class="btn" data-act="closeModal">ยกเลิก</button>
+      <button class="btn danger" data-act="doDeletePlan" data-id="${esc(id)}">ยืนยันลบถาวร</button>
+    </div>`);
+}
+
+function doDeletePlan(id){
+  DATA.floorplans = (DATA.floorplans || []).filter(p => p.id !== id);
+  save();
+  closeModal();
+  if (UI.plan.id === id){ UI.plan.id = ''; UI.plan.pinFE = ''; }
+  toast('ลบผังแล้ว', 'bad');
+  render();
+}
+
+function pinInfoModal(feId){
+  const plan = planOf(UI.plan.id, DATA.floorplans);
+  const fe = DATA.extinguishers.find(f => f.id === feId);
+  if (!plan || !fe) return;
+  openModal(`
+    <h3>ถัง ${esc(fe.code)}</h3>
+    <p class="hint" style="margin-top:0">📍 ${esc([fe.building, fe.zone, fe.point].filter(Boolean).join(' · ') || '—')}</p>
+    <div class="foot">
+      <button class="btn" data-act="closeModal">ปิด</button>
+      <button class="btn" data-act="goToFE" data-id="${esc(fe.id)}">🧯 ไปที่ถังใบนี้</button>
+      <button class="btn danger" data-act="doRemovePin" data-id="${esc(fe.id)}">ลบหมุดนี้</button>
+    </div>`);
+}
+
+function doRemovePin(feId){
+  const plan = planOf(UI.plan.id, DATA.floorplans);
+  if (!plan) return;
+  plan.pins = removePin(plan.pins, feId);
+  save();
+  closeModal();
+  toast('ลบหมุดแล้ว', 'bad');
+  render();
+}
+
 /* ---------- หน้าตั้งค่า ---------- */
 function viewSettings(){
   const s = DATA.settings;
@@ -3897,6 +4080,7 @@ function doDeleteFE(id){
   DATA.issues        = DATA.issues.filter(x => x.feId !== id);
   DATA.services      = DATA.services.filter(x => x.feId !== id);
   DATA.usageEvents   = DATA.usageEvents.filter(x => x.feId !== id);
+  for (const pl of DATA.floorplans || []) pl.pins = removePin(pl.pins, id);   // ผังไม่ถูกซิงก์ ไม่ต้องจดสุสาน ลบตรงได้เลย
   save();
   closeModal();
   UI.view = 'list'; UI.feId = null;
@@ -3920,6 +4104,31 @@ function shrinkImage(file){
           cv.width = w; cv.height = h;
           cv.getContext('2d').drawImage(img, 0, 0, w, h);
           resolve(cv.toDataURL('image/jpeg', PHOTO_QUALITY));
+        }catch(e){ reject(e); }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* เหมือน shrinkImage แต่รับขนาด/คุณภาพเป็นพารามิเตอร์ — ใช้กับรูปผัง (เฟส 7) ที่ต้องย่อขนาดต่างจากรูปแนบการตรวจ
+   ไม่แก้ shrinkImage เดิม เพื่อไม่กระทบจุดอื่นที่เรียกอยู่ */
+function shrinkImageTo(file, maxPx, quality){
+  return new Promise((resolve, reject) => {
+    if (!file || !String(file.type||'').startsWith('image/')) return reject(new Error('ไฟล์นี้ไม่ใช่รูปภาพ'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('อ่านไฟล์รูปไม่สำเร็จ'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('เปิดรูปนี้ไม่ได้'));
+      img.onload = () => {
+        try{
+          const { w, h } = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height, maxPx);
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL('image/jpeg', quality));
         }catch(e){ reject(e); }
       };
       img.src = reader.result;
@@ -3959,6 +4168,15 @@ async function makePhotoRecord(file){
   let thumb = '';
   try{ thumb = await shrinkDataUrl(full, THUMB_MAX_PX, THUMB_QUALITY); }
   catch(e){ console.error('[FireGuard] ทำรูปย่อไม่สำเร็จ', e); }
+  return { uid: uid('ph'), id:'', name:'', thumb, full, pending:true };
+}
+
+/* รูปผัง (เฟส 7) — เหมือน makePhotoRecord แต่ย่อ "รูปเต็ม" ด้วยขนาด/คุณภาพของผัง (ต้องอ่านตัวหนังสือออก) */
+async function makePlanImage(file){
+  const full = await shrinkImageTo(file, PLAN_MAX_PX, PLAN_QUALITY);
+  let thumb = '';
+  try{ thumb = await shrinkDataUrl(full, THUMB_MAX_PX, THUMB_QUALITY); }
+  catch(e){ console.error('[FireGuard] ทำรูปย่อผังไม่สำเร็จ', e); }
   return { uid: uid('ph'), id:'', name:'', thumb, full, pending:true };
 }
 
@@ -4071,6 +4289,7 @@ function renderForm(){
     : d.kind === 'closeIssue' ? closeIssueFormHTML(d)
     : d.kind === 'service'    ? serviceFormHTML(d)
     : d.kind === 'usage'      ? usageFormHTML(d)
+    : d.kind === 'plan'       ? planFormHTML(d)
     : '';
   openModal(html);
 }
@@ -5294,6 +5513,47 @@ document.addEventListener('click', e => {
       UI.round = null; render(); window.scrollTo(0,0);
       toast('จบรอบเดินตรวจ — ตรวจไป ' + p.done + ' ใบ', 'good', 3200); break;
     }
+
+    /* ----- เฟส 7: ผังจุดติดตั้ง ----- */
+    case 'newPlan':
+      openForm({ kind:'plan', name:'', image:null }); break;
+    case 'delPlanFormImage': {
+      const d = UI.formDraft;
+      if (d){ d.image = null; renderForm(); }
+      break;
+    }
+    case 'savePlan': savePlan(); break;
+    case 'askDeletePlan': askDeletePlan(t.dataset.id); break;
+    case 'doDeletePlan':  doDeletePlan(t.dataset.id); break;
+    case 'planPick':
+      UI.plan.id = t.dataset.id; UI.plan.pinFE = ''; UI.plan.zoom = 100;
+      render(); break;
+    case 'planZoom': {
+      const levels = PLAN_ZOOM_LEVELS;
+      let i = levels.indexOf(UI.plan.zoom);
+      if (i < 0) i = levels.indexOf(100);
+      if (t.dataset.z === 'in')       i = Math.min(levels.length - 1, i + 1);
+      else if (t.dataset.z === 'out') i = Math.max(0, i - 1);
+      else                            i = levels.indexOf(100);
+      UI.plan.zoom = levels[i];
+      render(); break;
+    }
+    case 'planTap': {
+      if (!UI.plan.pinFE){ toast('เลือกถังที่จะปักหมุดก่อน', 'bad'); break; }
+      const plan = planOf(UI.plan.id, DATA.floorplans);
+      if (!plan) break;
+      const rect = t.getBoundingClientRect();
+      const pt = pointToRatio(e.clientX, e.clientY, rect);
+      plan.pins = setPin(plan.pins, UI.plan.pinFE, pt.x, pt.y);
+      save(); render();
+      toast('ปักหมุดแล้ว', 'good'); break;
+    }
+    case 'pinInfo': pinInfoModal(t.dataset.id); break;
+    case 'doRemovePin': doRemovePin(t.dataset.id); break;
+    case 'goToFE':
+      closeModal();
+      UI.feId = t.dataset.id; UI.view = 'detail';
+      render(); window.scrollTo(0,0); break;
   }
 });
 
@@ -5367,6 +5627,8 @@ document.addEventListener('change', e => {
   }
   if (act === 'addPhoto'){ addPhotoFromInput(t); return; }
   if (act === 'addFormPhoto'){ addFormPhotoFromInput(t); return; }
+  if (act === 'addPlanFormImage'){ addPlanFormImage(t); return; }
+  if (act === 'planPickFE'){ UI.plan.pinFE = t.value; render(); return; }
   if (act === 'restoreFile'){ restoreFromFile(t); return; }
   if (act === 'importFile'){ importCSVFile(t); return; }
   if (act === 'rep'){
@@ -6505,6 +6767,84 @@ test('syncStatusText ซิงก์สำเร็จ', () =>
   assertTrue(syncStatusText({ lastSyncAt:'2026-08-25T03:00:00Z', lastSyncStatus:'ok', lastSyncNote:'ข้อมูลตรงกัน' }).indexOf('✓') === 0));
 test('syncStatusText ซิงก์ล้มเหลว', () =>
   assertTrue(syncStatusText({ lastSyncAt:'2026-08-25T03:00:00Z', lastSyncStatus:'fail', lastSyncNote:'เน็ตหลุด' }).includes('เน็ตหลุด')));
+
+/* ---------- เฟส 7: ผังจุดติดตั้ง (ฟังก์ชันคำนวณหมุด) ---------- */
+test('clamp01 บีบค่าอยู่ในช่วง 0-1', () => assertEq([clamp01(-0.4), clamp01(0.3), clamp01(1.7)], [0, 0.3, 1]));
+test('clamp01 ค่าที่ไม่ใช่ตัวเลข → 0', () => assertEq([clamp01('abc'), clamp01(undefined), clamp01(null)], [0, 0, 0]));
+
+test('planOf หาผังตาม id เจอ', () => assertEq(planOf('p2', [{id:'p1'},{id:'p2'}]).id, 'p2'));
+test('planOf ไม่เจอ → null', () => assertEq(planOf('px', [{id:'p1'}]), null));
+
+test('setPin เพิ่มหมุดใหม่', () => {
+  const pins = setPin([], 'f1', 0.3, 0.4);
+  assertEq(pins, [{ feId:'f1', x:0.3, y:0.4 }]);
+});
+test('setPin ถังเดิมที่ปักอยู่แล้ว = ย้ายตำแหน่ง ไม่เพิ่มหมุดซ้ำ', () => {
+  const pins = setPin([{ feId:'f1', x:0.1, y:0.1 }], 'f1', 0.9, 0.8);
+  assertEq(pins, [{ feId:'f1', x:0.9, y:0.8 }]);
+});
+test('setPin บีบพิกัดนอกช่วง 0-1 ให้อยู่ในกรอบ', () => {
+  const pins = setPin([], 'f1', -0.2, 1.5);
+  assertEq(pins, [{ feId:'f1', x:0, y:1 }]);
+});
+test('setPin รับ pins เดิมเป็น null ได้', () => assertEq(setPin(null, 'f1', 0.5, 0.5), [{ feId:'f1', x:0.5, y:0.5 }]));
+
+test('removePin เอาหมุดของถังที่ระบุออก', () => {
+  const pins = removePin([{ feId:'f1', x:0.1, y:0.1 }, { feId:'f2', x:0.2, y:0.2 }], 'f1');
+  assertEq(pins, [{ feId:'f2', x:0.2, y:0.2 }]);
+});
+test('removePin ไม่มีหมุดที่ระบุ ไม่พังและคืนของเดิม', () =>
+  assertEq(removePin([{ feId:'f1', x:0.1, y:0.1 }], 'fX'), [{ feId:'f1', x:0.1, y:0.1 }]));
+
+test('pinOf หาหมุดของถังในผังที่ระบุ', () =>
+  assertEq(pinOf({ pins:[{ feId:'f1', x:0.5, y:0.5 }] }, 'f1'), { feId:'f1', x:0.5, y:0.5 }));
+test('pinOf ผังไม่มีหมุดเลย → null', () => assertEq(pinOf({ pins:[] }, 'f1'), null));
+test('pinOf ผังเป็น null ไม่พัง', () => assertEq(pinOf(null, 'f1'), null));
+
+test('livePins ตัดหมุดที่ชี้ไปถังที่ถูกลบไปแล้วออก (หมุดตกค้าง)', () => {
+  const plan = { pins:[{ feId:'f1', x:0.1, y:0.1 }, { feId:'fGone', x:0.2, y:0.2 }] };
+  const out = livePins(plan, [{ id:'f1', code:'FE-001' }]);
+  assertEq(out.length, 1);
+  assertEq(out[0].fe.code, 'FE-001');
+});
+test('livePins แนบข้อมูลถัง (fe) ติดไปกับหมุดด้วย', () => {
+  const out = livePins({ pins:[{ feId:'f1', x:0.4, y:0.6 }] }, [{ id:'f1', code:'FE-009' }]);
+  assertEq([out[0].x, out[0].y, out[0].fe.code], [0.4, 0.6, 'FE-009']);
+});
+
+test('pinClass ถังส่งซ่อม = สีเทา (off) แม้เกินกำหนดตรวจ', () =>
+  assertEq(pinClass({ status:'repair', _due:'overdue' }), 'off'));
+test('pinClass ถังปลดระวาง = สีเทา (off)', () => assertEq(pinClass({ status:'retired', _due:'ok' }), 'off'));
+test('pinClass ถังพร้อมใช้ ใช้สีตามสถานะกำหนดตรวจ', () => assertEq(pinClass({ status:'active', _due:'overdue' }), 'over'));
+test('pinClass ไม่มีข้อมูลถัง → none', () => assertEq(pinClass(null), 'none'));
+
+test('planSummary นับจำนวนปักแล้ว/ทั้งหมด/ยังไม่ปักถูกต้อง', () => {
+  const plan = { pins:[{ feId:'f1', x:0.1, y:0.1 }] };
+  const s = planSummary(plan, [{ id:'f1', code:'FE-001' }, { id:'f2', code:'FE-002' }]);
+  assertEq([s.pinned, s.total, s.unpinned], [1, 2, 1]);
+  assertEq(s.restList.map(f => f.id), ['f2']);
+});
+test('planSummary ผังยังไม่มีหมุดเลย', () => {
+  const s = planSummary({ pins:[] }, [{ id:'f1' }]);
+  assertEq([s.pinned, s.unpinned], [0, 1]);
+});
+
+test('pointToRatio แปลงพิกัดกลางภาพเป็น 0.5,0.5', () =>
+  assertEq(pointToRatio(150, 100, { left:100, top:50, width:100, height:100 }), { x:0.5, y:0.5 }));
+test('pointToRatio แตะนอกภาพถูกบีบให้อยู่ในกรอบ 0-1', () =>
+  assertEq(pointToRatio(0, 500, { left:100, top:50, width:100, height:100 }), { x:0, y:1 }));
+test('pointToRatio rect กว้าง/สูงเป็น 0 (ภาพยังไม่โหลด) ไม่พัง', () =>
+  assertEq(pointToRatio(10, 10, { left:0, top:0, width:0, height:0 }), { x:0, y:0 }));
+
+test('ลบถังแล้วหมุดที่ชี้ไปถังนั้นในทุกผังต้องหายไปด้วย (สมการเดียวกับ doDeleteFE)', () => {
+  const floorplans = [
+    { id:'pl1', pins:[{ feId:'f1', x:0.1, y:0.1 }, { feId:'f2', x:0.2, y:0.2 }] },
+    { id:'pl2', pins:[{ feId:'f1', x:0.3, y:0.3 }] }
+  ];
+  for (const pl of floorplans) pl.pins = removePin(pl.pins, 'f1');
+  assertEq(floorplans[0].pins, [{ feId:'f2', x:0.2, y:0.2 }]);
+  assertEq(floorplans[1].pins, []);
+});
 
 function runTests(){
   const out = [];
