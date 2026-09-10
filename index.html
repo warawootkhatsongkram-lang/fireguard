@@ -390,7 +390,7 @@ tr:last-child td{border-bottom:none}
   .report tr{page-break-inside:avoid}
   .report .pill{border-color:#888 !important; color:#000 !important; background:none !important}
   .sign .line{border-top:1px solid #000}
-  .report .sign-name, .report .sign-role{color:#000 !important}
+  .report .sign-name, .report .sign-role, .report .sign-date{color:#000 !important}
   .tl{border-left-color:#999}
   .tl .ev .d{color:#000}
 }
@@ -3014,18 +3014,27 @@ const SIGN_SLOTS = [
   { key:'signManager',   role:'ผู้บังคับบัญชา / ผู้จัดการ' }
 ];
 const SIGN_BLANK = '............................';
+const SIGN_DATE_BLANK = '......../......../........';
+
+/* วันที่ลงนามที่พิมพ์ไว้ — เก็บใน UI (ไม่บันทึกลงข้อมูล) กันวันที่ของรายงานเก่าค้างมาโผล่ในใบใหม่ */
+function signDateOf(key){
+  const m = (UI.report && UI.report.signDates) || {};
+  return isValidISO(m[key]) ? m[key] : '';
+}
 
 function repSigns(){
   return `
     <div class="signs">
       ${SIGN_SLOTS.map(s => {
         const nm = String(DATA.settings[s.key] == null ? '' : DATA.settings[s.key]).trim();
+        const dt = signDateOf(s.key);
         return `
       <div class="sign">
         <div class="line">( <span class="sign-name" data-name="${s.key}">${nm ? esc(nm) : SIGN_BLANK}</span> )</div>
         <div class="sign-role">${esc(s.role)}</div>
-        วันที่ ......../......../........
+        วันที่ <span class="sign-date" data-date="${s.key}">${dt ? esc(thaiDate(dt)) : SIGN_DATE_BLANK}</span>
         <input class="sign-in noprint" type="text" placeholder="พิมพ์ชื่อ${esc(s.role)}" value="${esc(nm)}" data-act="signName" data-key="${s.key}">
+        <input class="sign-in noprint" type="date" value="${esc(dt)}" title="วันที่ลงนาม — ${esc(s.role)}" data-act="signDate" data-key="${s.key}">
       </div>`;
       }).join('')}
     </div>`;
@@ -5588,6 +5597,15 @@ document.addEventListener('input', e => {
     save();
     const box = document.querySelector('.sign-name[data-name="' + key + '"]');
     if (box) box.textContent = t.value.trim() || SIGN_BLANK;
+    renderDebug();
+    return;
+  }
+  if (act === 'signDate'){                                 // วันที่ลงนามท้ายรายงาน — อัปเดตสดโดยไม่ re-render (กัน focus หลุด)
+    if (!UI.report) return;
+    if (!UI.report.signDates) UI.report.signDates = {};
+    UI.report.signDates[t.dataset.key] = t.value;
+    const box = document.querySelector('.sign-date[data-date="' + t.dataset.key + '"]');
+    if (box) box.textContent = isValidISO(t.value) ? thaiDate(t.value) : SIGN_DATE_BLANK;
     renderDebug();
     return;
   }
