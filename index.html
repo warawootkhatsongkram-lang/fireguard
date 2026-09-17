@@ -395,6 +395,40 @@ tr:last-child td{border-bottom:none}
   .tl .ev .d{color:#000}
 }
 
+/* ---------- หน้าล็อกอิน (ด่านรหัสผ่านก่อนเข้าระบบ) ----------
+   ตอนยังไม่ล็อกอิน body จะมีคลาส .locked → ซ่อนหัวแอป/เนื้อหาทั้งหมด เหลือกล่องล็อกอินลอยบนหมอกควันเดิม */
+body.locked header.top, body.locked .wrap{display:none}
+#login{display:none; min-height:100vh; min-height:100dvh; place-items:center;
+  padding:max(24px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
+body.locked #login{display:grid}
+.login-card{width:100%; max-width:400px; background:rgba(14,22,38,.78); border:1px solid var(--line2); border-radius:18px;
+  padding:28px 22px 22px; backdrop-filter:blur(16px); box-shadow:0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.05)}
+.login-head{text-align:center; margin-bottom:22px}
+.login-head img{height:52px; width:auto; display:inline-block; background:#fff; border-radius:10px; padding:5px 9px}
+.login-head h1{margin:14px 0 0; font-size:26px; line-height:1.2; letter-spacing:.02em}
+.login-head h1 em{font-style:normal; background:linear-gradient(92deg,var(--gold2),#fff); -webkit-background-clip:text; background-clip:text; color:transparent}
+.login-head p{margin:4px 0 0; font-size:14.5px; color:var(--muted)}
+.login-head .co{display:block; margin-top:2px; font-size:13px; color:var(--gold2)}
+.pw-field{position:relative}
+#loginPw{width:100%; min-height:50px; padding:10px 54px 10px 14px; border-radius:var(--r2); font-size:17px;
+  background:rgba(0,0,0,.28); border:1px solid var(--line2); color:var(--txt); outline:none}
+#loginPw:focus{border-color:var(--gold2); box-shadow:0 0 0 3px rgba(233,168,173,.22); background:rgba(3,10,22,.5)}
+#loginPw[aria-invalid="true"]{border-color:var(--red); box-shadow:0 0 0 3px rgba(239,68,68,.20)}
+.pw-toggle{position:absolute; right:3px; top:3px; width:44px; height:44px; display:grid; place-items:center;
+  background:transparent; border:0; border-radius:8px; color:var(--muted); cursor:pointer}
+.pw-toggle:hover{color:#fff}
+.pw-toggle:focus-visible, .login-card .btn:focus-visible, .logout-btn:focus-visible{outline:2px solid var(--gold2); outline-offset:2px}
+.pw-toggle svg, .login-card .btn svg, .logout-btn svg{width:20px; height:20px; flex:0 0 auto}
+#loginErr{min-height:22px; margin:8px 0 0}
+.login-card .btn.primary{min-height:50px; margin-top:10px; font-size:17px}
+.login-card .hint{text-align:center; margin-top:14px}
+.login-shake{animation:loginShake .32s ease-in-out}
+@keyframes loginShake{20%,60%{transform:translateX(-7px)} 40%,80%{transform:translateX(7px)}}
+@media (prefers-reduced-motion:reduce){ .login-shake{animation:none} }
+/* ปุ่มออกจากระบบที่หัวแอป — จอแคบเหลือแค่ไอคอน (มี aria-label บอกชื่อปุ่มอยู่แล้ว) */
+.btn.logout-btn{flex:0 0 auto; min-width:44px; min-height:44px}   /* .btn. นำหน้า เพื่อชนะ .btn.sm{min-height:38px} — ปุ่มกดบนมือถือต้อง ≥44px */
+@media(max-width:620px){ .logout-btn span{display:none} .btn.logout-btn{padding:6px 10px} }
+
 /* test panel (?test=1) */
 #testout{display:none; position:fixed; inset:0; z-index:300; background:#0b1220; overflow:auto; padding:18px; font-size:14px}
 #testout.on{display:block}
@@ -417,8 +451,37 @@ tr:last-child td{border-bottom:none}
       </span>
     </div>
     <div class="site" id="siteName"></div>
+    <button type="button" class="btn sm logout-btn" data-act="askLogout" aria-label="ออกจากระบบ" title="ออกจากระบบ">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      <span>ออก</span>
+    </button>
   </div>
 </header>
+
+<!-- หน้าล็อกอิน — แสดงเฉพาะตอน body มีคลาส .locked (ดู showLogin ในสคริปต์) -->
+<div id="login">
+  <form class="login-card" id="loginForm" novalidate>
+    <div class="login-head">
+      <img id="loginLogo" alt="โลโก้บริษัท">
+      <h1><em>FireGuard</em></h1>
+      <p>ระบบบันทึกและตรวจสอบถังดับเพลิง</p>
+      <span class="co" id="loginCo"></span>
+    </div>
+    <label class="f" for="loginPw">รหัสผ่าน</label>
+    <div class="pw-field">
+      <input type="password" id="loginPw" name="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-describedby="loginErr" required>
+      <button type="button" class="pw-toggle" id="loginPwToggle" aria-label="แสดงรหัสผ่าน" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+    </div>
+    <p class="err" id="loginErr" role="alert"></p>
+    <button type="submit" class="btn primary block">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      เข้าสู่ระบบ
+    </button>
+    <p class="hint">ใส่รหัสครั้งเดียว เครื่องนี้จะจำไว้จนกว่าจะกด “ออก” ที่มุมขวาบน</p>
+  </form>
+</div>
 
 <div class="wrap">
   <nav class="tabs" id="tabs"></nav>
@@ -438,6 +501,11 @@ const APP_VERSION = '1.0 (เฟส 1)';
 const COMPANY = 'Chusilp Group Trading Co., Ltd.';   // แบรนด์ถาวร — ไม่ใช่ค่าตั้ง แก้ได้ที่บรรทัดนี้จุดเดียว
 const LS_KEY = 'fireguard_data';
 const SCHEMA_VERSION = 4;                      // v2 = เพิ่มผังจุดติดตั้ง (เฟส 7) · v3 = รูปเก็บบน Google Drive · v4 = สุสาน (จำรายการที่ลบ กันซิงก์ดึงกลับ)
+/* ด่านรหัสผ่าน — เก็บเฉพาะค่า SHA-256 ของรหัส ไม่เก็บตัวรหัสจริงในไฟล์
+   เปลี่ยนรหัส: เอารหัสใหม่ไปหา SHA-256 แล้ววางแทนค่านี้ (ทุกเครื่องจะถูกให้ล็อกอินใหม่เอง)
+   ⚠️ เป็นแค่ประตูกันคนทั่วไป ไม่ใช่ระบบความปลอดภัยจริง — ไฟล์อยู่บนเว็บ public ใครอ่านโค้ดก็ข้ามได้ */
+const AUTH_HASH = 'df2840410a8b8899968c5b8e1004951248a3df7053ca2bc7ba0edef2d5133e68';
+const AUTH_KEY  = 'fireguard_auth';            // แยกคีย์จากข้อมูลถัง — ออกจากระบบแล้วข้อมูลไม่หาย
 
 /* ชนิดสารดับเพลิง — weigh:true = ต้องชั่งน้ำหนักแทนการดูเกจแรงดัน */
 const AGENT_TYPES = [
@@ -3638,6 +3706,106 @@ function toast(msg, kind, ms){
   setTimeout(() => el.remove(), ms || 2600);
 }
 
+/* ---------- ด่านรหัสผ่าน (หน้าล็อกอิน) ---------- */
+/* SHA-256 เขียนเองแบบ sync — ไม่ใช้ crypto.subtle เพราะบางเครื่องไม่มีให้ตอนเปิดผ่าน file:// / http
+   คืนค่าเป็น hex 64 ตัว · มี test เทียบค่ามาตรฐานใน ?test=1 */
+function sha256Hex(str){
+  const K = [], H = [];
+  const frac = x => ((x - Math.floor(x)) * 4294967296) | 0;
+  for (let n = 2, c = 0; c < 64; n++){                    // ค่าคงที่ = เศษของรากที่ 2/3 ของจำนวนเฉพาะ (ตามมาตรฐาน)
+    let prime = true;
+    for (let d = 2; d * d <= n; d++) if (n % d === 0){ prime = false; break; }
+    if (!prime) continue;
+    if (c < 8) H[c] = frac(Math.pow(n, 1/2));
+    K[c++] = frac(Math.pow(n, 1/3));
+  }
+  const b = Array.from(new TextEncoder().encode(String(str == null ? '' : str)));
+  const bitLen = b.length * 8;
+  b.push(0x80);
+  while (b.length % 64 !== 56) b.push(0);
+  for (let i = 7; i >= 0; i--) b.push(i >= 4 ? 0 : (bitLen >>> (i * 8)) & 255);
+  const rotr = (x, k) => (x >>> k) | (x << (32 - k));
+  const w = new Array(64);
+  for (let o = 0; o < b.length; o += 64){
+    for (let i = 0; i < 16; i++) w[i] = (b[o+i*4] << 24) | (b[o+i*4+1] << 16) | (b[o+i*4+2] << 8) | b[o+i*4+3];
+    for (let i = 16; i < 64; i++){
+      const s0 = rotr(w[i-15], 7) ^ rotr(w[i-15], 18) ^ (w[i-15] >>> 3);
+      const s1 = rotr(w[i-2], 17) ^ rotr(w[i-2], 19) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let [a, bb, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++){
+      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & bb) ^ (a & c) ^ (bb & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = bb; bb = a; a = (t1 + t2) | 0;
+    }
+    [a, bb, c, d, e, f, g, h].forEach((v, j) => { H[j] = (H[j] + v) | 0; });
+  }
+  return H.map(v => (v >>> 0).toString(16).padStart(8, '0')).join('');
+}
+/* ตัดช่องว่างหัวท้ายก่อนเทียบ — กันพลาดจากการวางรหัสที่ติดเว้นวรรคมา */
+function checkPassword(pw){ return sha256Hex(String(pw == null ? '' : pw).trim()) === AUTH_HASH; }
+
+let authMem = false;                                     // สำรองกรณีเครื่องเขียน localStorage ไม่ได้ — เข้าได้เฉพาะรอบที่เปิดอยู่
+function isAuthed(){
+  if (authMem) return true;
+  try{ return localStorage.getItem(AUTH_KEY) === AUTH_HASH; }catch(e){ return false; }
+}
+function rememberLogin(){
+  authMem = true;
+  try{ localStorage.setItem(AUTH_KEY, AUTH_HASH); }catch(e){ console.warn('[FireGuard] จำการล็อกอินในเครื่องไม่ได้', e); }
+}
+function forgetLogin(){                                  // ลบแค่สถานะล็อกอิน ไม่แตะข้อมูลถัง (LS_KEY)
+  authMem = false;
+  try{ localStorage.removeItem(AUTH_KEY); }catch(e){ console.warn('[FireGuard] ลบสถานะล็อกอินไม่ได้', e); }
+}
+
+/* แสดงหน้าล็อกอิน — รหัสถูกแล้วเรียก onDone() เพื่อเปิดแอปต่อ (รวมถึงลิงก์ QR ?fe= ที่เปิดค้างมา) */
+function showLogin(onDone){
+  document.body.classList.add('locked');
+  const logo = document.querySelector('header.top .logo img');
+  if (logo) $('#loginLogo').src = logo.src;              // ยืมโลโก้จากหัวแอป ไม่ฝัง base64 ซ้ำอีกชุด
+  $('#loginCo').textContent = COMPANY;
+  const form = $('#loginForm'), pw = $('#loginPw'), err = $('#loginErr'), tg = $('#loginPwToggle');
+
+  function fail(msg){
+    err.textContent = msg;
+    pw.setAttribute('aria-invalid', 'true');
+    form.classList.remove('login-shake'); void form.offsetWidth; form.classList.add('login-shake');   // สั่นซ้ำได้ทุกครั้งที่ผิด
+    pw.select(); pw.focus();
+  }
+  tg.onclick = () => {
+    const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    tg.setAttribute('aria-pressed', String(show));
+    tg.setAttribute('aria-label', show ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน');
+    pw.focus();
+  };
+  pw.oninput = () => { if (err.textContent){ err.textContent = ''; pw.removeAttribute('aria-invalid'); } };
+  form.onsubmit = e => {
+    e.preventDefault();
+    if (!pw.value.trim()){ fail('กรุณาใส่รหัสผ่าน'); return; }
+    if (!checkPassword(pw.value)){ fail('รหัสผ่านไม่ถูกต้อง ลองใหม่อีกครั้ง'); return; }
+    rememberLogin();
+    pw.value = '';
+    form.onsubmit = e2 => e2.preventDefault();           // กด Enter รัวๆ ไม่ให้เปิดแอปซ้ำ
+    document.body.classList.remove('locked');
+    onDone();
+  };
+  setTimeout(() => pw.focus(), 50);
+}
+function askLogout(){
+  openModal(`
+    <h3>ออกจากระบบ?</h3>
+    <p>ข้อมูลถังและผลตรวจในเครื่องนี้ <b>ยังอยู่ครบ</b> ไม่ถูกลบ — แค่ครั้งหน้าต้องใส่รหัสผ่านใหม่</p>
+    <div class="foot"><button class="btn" data-act="closeModal">ยกเลิก</button><button class="btn primary" data-act="doLogout">ออกจากระบบ</button></div>`);
+}
+function doLogout(){
+  forgetLogin();
+  closeModal();
+  location.reload();                                     // โหลดหน้าใหม่ = หยุดกล้อง/ตัวจับเวลาที่ค้างอยู่ทั้งหมด แล้วเจอหน้าล็อกอิน
+}
+
 function renderDebug(){
   const box = $('#debug');
   if (!box.classList.contains('on')) return;
@@ -5274,6 +5442,8 @@ document.addEventListener('click', e => {
 
   if (act === 'maskClose'){ if (e.target === t) closeModal(); return; }
   if (act === 'closeModal'){ closeModal(); return; }
+  if (act === 'askLogout'){ askLogout(); return; }
+  if (act === 'doLogout'){ doLogout(); return; }
 
   switch(act){
     case 'tab':
@@ -5677,6 +5847,12 @@ function init(){
   const p = new URLSearchParams(location.search);
   if (p.get('debug') === '1') document.getElementById('debug').classList.add('on');
   if (p.get('test')) { runTests(); return; }
+  /* ด่านรหัสผ่าน — ยังไม่เคยล็อกอินในเครื่องนี้ ให้เจอหน้าล็อกอินก่อน ผ่านแล้วค่อยเปิดแอปต่อ (?fe= ยังพาไปถังถูกใบ) */
+  if (!isAuthed()){ showLogin(() => startApp(p)); return; }
+  startApp(p);
+}
+/* ส่วนเปิดแอปหลังผ่านด่านรหัสผ่าน — แยกออกจาก init() เพื่อให้เรียกต่อหลังล็อกอินได้โดยไม่ load() ซ้ำ */
+function startApp(p){
   const feCode = p.get('fe');                              // เตรียมไว้ให้ QR เฟส 2 (?fe=FE-001)
   if (feCode){
     const fe = DATA.extinguishers.find(f => String(f.code).toLowerCase() === feCode.toLowerCase());
@@ -6862,6 +7038,27 @@ test('ลบถังแล้วหมุดที่ชี้ไปถัง�
   for (const pl of floorplans) pl.pins = removePin(pl.pins, 'f1');
   assertEq(floorplans[0].pins, [{ feId:'f2', x:0.2, y:0.2 }]);
   assertEq(floorplans[1].pins, []);
+});
+
+/* ---------- ด่านรหัสผ่าน ---------- */
+test('sha256Hex: ค่ามาตรฐาน "" / "abc" / ข้อความยาวข้ามบล็อก', () => {
+  assertEq(sha256Hex(''),    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assertEq(sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  assertEq(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'),
+           '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+});
+test('sha256Hex: ภาษาไทย (UTF-8) + null ไม่ล่ม', () => {
+  assertEq(sha256Hex('ถัง'), '0a39eb14f0864260cc8beb75965bf48b8e21b44b3a18a2076ce83f65ce0ececf');
+  assertEq(sha256Hex(null), sha256Hex(''));
+});
+test('checkPassword: รหัสถูก / ผิด / ว่าง / ตัวพิมพ์ใหญ่ / เว้นวรรคหัวท้าย', () => {
+  assertEq(checkPassword('watcharaporn007'), true);
+  assertEq(checkPassword('  watcharaporn007 '), true);
+  assertEq(checkPassword('Watcharaporn007'), false);
+  assertEq(checkPassword('watcharaporn00'), false);
+  assertEq(checkPassword(''), false);
+  assertEq(checkPassword(null), false);
+  assertEq(checkPassword(undefined), false);
 });
 
 function runTests(){
